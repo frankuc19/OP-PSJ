@@ -24,7 +24,7 @@ if 'user_role' not in st.session_state:
 
 # --- PÁGINA DE LOGIN ---
 if not st.session_state['authenticated']:
-    st.title("Bienvenido al Sistema de Análisis")
+    st.title("Transvip")
     st.write("Por favor, inicia sesión para continuar.")
 
     with st.form("login_form"):
