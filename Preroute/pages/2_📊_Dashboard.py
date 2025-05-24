@@ -174,18 +174,23 @@ if df is not None:
         st.markdown("---")
 
         col_convenio, col_Categoria_viaje_chart = st.columns(2)
+        
         with col_convenio:
             st.subheader("📊 Viajes por Convenio")
             if 'convenio' in df_filtered.columns:
-                convenio_counts = df_filtered['convenio'].value_counts()
+                # 1. Filtrar para excluir el convenio 'PERSONAL' del DataFrame
+                df_convenio_chart = df_filtered[df_filtered['convenio'] != 'PERSONAL']
+                
+                # 2. Contar los valores. value_counts() ya ordena de mayor a menor por defecto.
+                convenio_counts = df_convenio_chart['convenio'].value_counts()
+                
+                # 3. Mostrar el gráfico con los datos filtrados y ordenados
                 st.bar_chart(convenio_counts)
             else:
                 st.warning("Columna 'convenio' no encontrada.")
         
-        # --- CÓDIGO CORREGIDO ---
         with col_Categoria_viaje_chart:
             st.subheader("💰 Monto y Cantidad por Categoría de Viaje")
-            # Se usa 'categoria_viaje' (minúsculas) para la comprobación y el agrupamiento
             if 'categoria_viaje' in df_filtered.columns and 'job_id' in df_filtered.columns and 'estimated_payment' in df_filtered.columns:
                 analisis_Categoria = df_filtered.groupby('categoria_viaje').agg(
                     Monto_Total=('estimated_payment', 'sum'),
@@ -193,9 +198,7 @@ if df is not None:
                 ).sort_values(by="Monto_Total", ascending=False)
                 st.bar_chart(analisis_Categoria)
             else:
-                # El mensaje de advertencia ahora es más específico para facilitar la depuración
                 st.warning("Columnas ('categoria_viaje', 'job_id', 'estimated_payment') no encontradas.")
-        # --- FIN DE LA CORRECCIÓN ---
 
     else:
         st.info("No hay datos para mostrar con los filtros seleccionados.")
