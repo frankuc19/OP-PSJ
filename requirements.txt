@@ -8,3 +8,4 @@ matplotlib>=3.8
 plotly>=5.21
 geopy>=2.4
 scikit-learn>=1.4
+bcrypt
