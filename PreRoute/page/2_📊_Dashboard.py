@@ -1,69 +1,58 @@
-# pages/1_Tabla_MySQL.py
+# pages/2_📊_Dashboard.py (o el nombre correcto de tu archivo)
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-# -------------------------------------------------------------------
-# Configuración de la Página de Streamlit
-# -------------------------------------------------------------------
+# 1. st.set_page_config() es el PRIMER comando de Streamlit
 st.set_page_config(
     page_title="Dashboard de Logística",
-    page_icon="🗺️",
+    page_icon="📊",
     layout="wide"
 )
 
-# -------------------------------------------------------------------
-# Función para cargar y procesar datos con caché
-# -------------------------------------------------------------------
+# 2. Guardia de seguridad para verificar el login
+if not st.session_state.get('authenticated', False):
+    st.error("Debes iniciar sesión para ver esta página.")
+    st.stop()
+
+# --- SI EL USUARIO ESTÁ AUTENTICADO, EL CÓDIGO CONTINÚA DESDE AQUÍ ---
+# Eliminamos el st.success de diagnóstico
+
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(sheet_url):
-    """
-    Carga los datos desde una URL pública de Google Sheets y realiza una
-    limpieza básica para asegurar que los tipos de datos son correctos.
-    """
     try:
         csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
         df = pd.read_csv(csv_url)
-        
         df.columns = df.columns.str.lower().str.strip()
-        
         df['pickup_datetime'] = pd.to_datetime(df['pickup_datetime'], errors='coerce')
         df['job_id'] = df['job_id'].astype(str)
-        
         numeric_cols = ['estimated_payment', 'latrecogida', 'lonrecogida', 'latdestino', 'londestino', 'tiempoestimada', 'distancia']
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-
         df[numeric_cols] = df[numeric_cols].fillna(0)
-        
         return df
     except Exception as e:
-        st.error(f"Error al cargar o procesar los datos. Revisa que todas las columnas necesarias existan en tu Google Sheet. Error: {e}")
+        st.error(f"Error al cargar o procesar los datos del Google Sheet: {e}")
+        st.warning("Verifica la URL del Google Sheet y que el formato de los datos sea el esperado.")
         return None
 
-# -------------------------------------------------------------------
-# Cuerpo de la Aplicación
-# -------------------------------------------------------------------
-
-st.title("🗺️ Dashboard de Operaciones")
+st.title("📊 Dashboard de Operaciones")
 st.write("Análisis interactivo de los datos de viajes cargados")
 
 GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ZLwfPqKG2LP2eqp7hDkFeUCSw2jsgGhkmek3xL2KzGc/edit?usp=sharing"
-
 df = load_data_from_gsheet(GSHEET_URL)
 
 if df is not None:
     st.sidebar.header("Filtros Interactivos")
-    
-    job_id_input = st.sidebar.text_input("Buscar por Job ID:")
-    selected_convenios = st.sidebar.multiselect('Convenio:', options=sorted(df['convenio'].unique()), default=[])
-    selected_tipos_servicio = st.sidebar.multiselect('Tipo de Servicio:', options=sorted(df['tipo_servicio'].unique()), default=[])
-    selected_zonas_origen = st.sidebar.multiselect('Zona de Origen:', options=sorted(df['zonaorigen'].unique()), default=[])
-    selected_zonas_destino = st.sidebar.multiselect('Zona de Destino:', options=sorted(df['zonadestino'].unique()), default=[])
-    selected_categorias = st.sidebar.multiselect('Categoria de Viaje:', options=sorted(df['categoria_viaje'].unique()), default=[])
+    job_id_input = st.sidebar.text_input("Buscar por Job ID:", key="dashboard_job_id_filter")
+    selected_convenios = st.sidebar.multiselect('Convenio:', options=sorted(df['convenio'].unique()), default=[], key="dashboard_convenio_filter")
+    selected_tipos_servicio = st.sidebar.multiselect('Tipo de Servicio:', options=sorted(df['tipo_servicio'].unique()), default=[], key="dashboard_tipo_servicio_filter")
+    selected_zonas_origen = st.sidebar.multiselect('Zona de Origen:', options=sorted(df['zonaorigen'].unique()), default=[], key="dashboard_zona_origen_filter")
+    selected_zonas_destino = st.sidebar.multiselect('Zona de Destino:', options=sorted(df['zonadestino'].unique()), default=[], key="dashboard_zona_destino_filter")
+    selected_categorias = st.sidebar.multiselect('Categoria de Viaje:', options=sorted(df['categoria_viaje'].unique()), default=[], key="dashboard_categoria_viaje_filter")
 
-    df_filtered = df
+    df_filtered = df.copy()
     if job_id_input:
         df_filtered = df_filtered[df_filtered['job_id'] == job_id_input]
     if selected_convenios:
@@ -79,7 +68,6 @@ if df is not None:
 
     st.header("Vista de Datos")
     st.dataframe(df_filtered)
-    
     st.download_button(
         label="📥 Descargar datos como CSV",
         data=df_filtered.to_csv(index=False).encode('utf-8'),
@@ -109,56 +97,63 @@ if df is not None:
 
     if not df_filtered.empty:
         col_map, col_dist = st.columns(2)
-
         with col_map:
             st.subheader("📍 Mapa de Origen de Viajes")
             map_data = df_filtered[['latrecogida', 'lonrecogida']].copy()
             map_data.rename(columns={'latrecogida': 'lat', 'lonrecogida': 'lon'}, inplace=True)
             map_data = map_data[(map_data['lat'] != 0) & (map_data['lon'] != 0)]
-            st.map(map_data)
+            if not map_data.empty:
+                st.map(map_data)
+            else:
+                st.info("No hay datos de geolocalización para mostrar en el mapa con los filtros actuales.")
         
         with col_dist:
-            # --- INICIO DE LA MODIFICACIÓN ---
             st.subheader("📊 Distribución de Viajes por Monto")
-            
-            # 1. Definir los límites de los intervalos (bins) manualmente.
-            #    np.inf representa "infinito", para capturar todos los valores superiores.
             bins = [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, np.inf]
-            
-            # 2. Crear las etiquetas para cada intervalo.
             labels = [
                 '$0 - $4,999', '$5,000 - $9,999', '$10,000 - $14,999',
                 '$15,000 - $19,999', '$20,000 - $24,999', '$25,000 - $29,999',
                 '$30,000 - $34,999', '$35,000 - $39,999', '$40,000 - $44,999',
                 'Más de $45,000'
             ]
-            
-            # Usar pd.cut para agrupar los viajes en los intervalos definidos
-            df_filtered['rango_monto'] = pd.cut(
-                x=df_filtered['estimated_payment'], 
-                bins=bins, 
-                labels=labels, 
-                right=False # Intervalo [inicio, fin)
-            )
-            
-            # Contar cuántos viajes hay en cada rango y ordenar por el rango
-            monto_counts = df_filtered['rango_monto'].value_counts().sort_index()
-            
-            st.bar_chart(monto_counts)
-            # --- FIN DE LA MODIFICACIÓN ---
+            if 'estimated_payment' in df_filtered.columns:
+                df_filtered['rango_monto'] = pd.cut(
+                    x=df_filtered['estimated_payment'], 
+                    bins=bins, 
+                    labels=labels, 
+                    right=False
+                )
+                monto_counts = df_filtered['rango_monto'].value_counts().sort_index()
+                st.bar_chart(monto_counts)
+            else:
+                st.warning("Columna 'estimated_payment' no encontrada para el gráfico de distribución.")
             
         st.markdown("---")
 
-        col_convenio, col_categoria = st.columns(2)
+        col_convenio, col_categoria_viaje_chart = st.columns(2)
         with col_convenio:
             st.subheader("📊 Viajes por Convenio")
-            convenio_counts = df_filtered['convenio'].value_counts()
-            st.bar_chart(convenio_counts)
-        with col_categoria:
-            st.subheader("💰 Monto por Categoría de Viaje")
-            monto_por_categoria = df_filtered.groupby('categoria_viaje')['estimated_payment'].sum()
-            st.bar_chart(monto_por_categoria)
+            if 'convenio' in df_filtered.columns:
+                convenio_counts = df_filtered['convenio'].value_counts()
+                st.bar_chart(convenio_counts)
+            else:
+                st.warning("Columna 'convenio' no encontrada.")
+        with col_categoria_viaje_chart:
+            st.subheader("💰 Monto y Cantidad por Categoría de Viaje")
+            if 'categoria_viaje' in df_filtered.columns and 'job_id' in df_filtered.columns and 'estimated_payment' in df_filtered.columns:
+                analisis_categoria = df_filtered.groupby('categoria_viaje').agg(
+                    Monto_Total=('estimated_payment', 'sum'),
+                    Cantidad_de_Viajes=('job_id', 'count')
+                )
+                st.bar_chart(analisis_categoria)
+            else:
+                st.warning("Columnas necesarias para el análisis por categoría de viaje no encontradas.")
     else:
         st.info("No hay datos para mostrar con los filtros seleccionados.")
 else:
     st.warning("No se pudieron cargar los datos. Revisa la URL y los permisos de tu Google Sheet.")
+
+if st.sidebar.button("Cerrar Sesión", key="logout_dashboard_page"): # Key única
+    for key_session in st.session_state.keys():
+        del st.session_state[key_session]
+    st.switch_page("Home.py")
