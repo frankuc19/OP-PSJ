@@ -3,7 +3,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import time # Importado para el filtro de hora
+from datetime import time
+import streamlit.components.v1 as components # NUEVO: Importación para el auto-refresco
 
 # 1. st.set_page_config() es el PRIMER comando de Streamlit
 st.set_page_config(
@@ -19,8 +20,12 @@ if not st.session_state.get('authenticated', False):
 
 # --- SI EL USUARIO ESTÁ AUTENTICADO, EL CÓDIGO CONTINÚA DESDE AQUÍ ---
 
-@st.cache_data(ttl=300)
+# MODIFICADO: El TTL se reduce a 60 segundos para una actualización más frecuente.
+@st.cache_data(ttl=60)
 def load_data_from_gsheet(sheet_url):
+    """
+    Carga datos desde Google Sheets. La caché expira cada 60 segundos.
+    """
     try:
         csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
         df_original_case = pd.read_csv(csv_url)
@@ -28,12 +33,11 @@ def load_data_from_gsheet(sheet_url):
         df = df_original_case.copy()
         df.columns = df.columns.str.lower().str.strip()
 
-        # Asegurarse que la columna de fecha exista antes de procesarla
         if 'pickup_datetime' in df.columns:
             df['pickup_datetime'] = pd.to_datetime(df['pickup_datetime'], errors='coerce')
         else:
             st.warning("Advertencia en load_data: La columna 'pickup_datetime' no se encontró.")
-            return None # Devolver None si la columna de fecha es esencial
+            return None
         
         df['job_id'] = df['job_id'].astype(str)
         
@@ -54,7 +58,10 @@ def load_data_from_gsheet(sheet_url):
         return None
 
 st.title("📊 Dashboard de Operaciones")
-st.write("Análisis interactivo de los datos de viajes cargados")
+st.write("Análisis interactivo de los datos de viajes cargados. La información se actualiza automáticamente cada 60 segundos.")
+
+# NUEVO: Componente que fuerza el refresco de la página cada 60 segundos.
+components.html("<meta http-equiv='refresh' content='60'>", height=0)
 
 GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ZLwfPqKG2LP2eqp7hDkFeUCSw2jsgGhkmek3xL2KzGc/edit?usp=sharing"
 df = load_data_from_gsheet(GSHEET_URL)
@@ -70,16 +77,13 @@ if df is not None:
     selected_zonas_destino = st.sidebar.multiselect('Zona de Destino:', options=sorted(df['zonadestino'].unique()) if 'zonadestino' in df.columns else [], default=[], key="dashboard_zona_destino_filter")
     selected_Categorias = st.sidebar.multiselect('Categoria de Viaje:', options=sorted(df['categoria_viaje'].unique()) if 'categoria_viaje' in df.columns else [], default=[], key="dashboard_Categoria_viaje_filter")
 
-    # --- NUEVO: Filtros de Fecha y Hora ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("Filtro por Fecha y Hora de Recogida")
 
-    # Determinar las fechas mínima y máxima del dataset para los selectores
     if not df['pickup_datetime'].isnull().all():
         min_date_data = df['pickup_datetime'].min().date()
         max_date_data = df['pickup_datetime'].max().date()
     else:
-        # Fallback por si no hay fechas válidas
         min_date_data = pd.Timestamp.now().date()
         max_date_data = pd.Timestamp.now().date()
 
@@ -94,12 +98,10 @@ if df is not None:
         start_time = st.time_input("Hora de inicio", value=time(0, 0), key="dashboard_start_time")
     with col4:
         end_time = st.time_input("Hora de fin", value=time(23, 59, 59), key="dashboard_end_time")
-    # --- FIN DE CAMBIO ---
 
     # Aplicación de filtros
     df_filtered = df.copy()
     
-    # Filtros existentes
     if job_id_input and 'job_id' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['job_id'] == job_id_input]
     if selected_convenios and 'convenio' in df_filtered.columns:
@@ -113,21 +115,17 @@ if df is not None:
     if selected_Categorias and 'categoria_viaje' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['categoria_viaje'].isin(selected_Categorias)]
 
-    # --- NUEVO: Aplicación de filtro de fecha y hora ---
     if start_date > end_date:
         st.sidebar.error("Error: La fecha de inicio no puede ser posterior a la fecha de fin.")
     else:
-        # Filtrar por rango de fechas
         df_filtered = df_filtered[
             (df_filtered['pickup_datetime'].dt.date >= start_date) &
             (df_filtered['pickup_datetime'].dt.date <= end_date)
         ]
-        # Filtrar por rango de horas
         df_filtered = df_filtered[
             (df_filtered['pickup_datetime'].dt.time >= start_time) &
             (df_filtered['pickup_datetime'].dt.time <= end_time)
         ]
-    # --- FIN DE CAMBIO ---
 
     st.header("Vista de Datos")
     st.dataframe(df_filtered)
@@ -161,7 +159,6 @@ if df is not None:
         df_for_download.rename(columns=current_rename_map, inplace=True)
         final_ordered_columns_for_csv = [col for col in desired_csv_columns_ordered if col in df_for_download.columns]
         df_for_download = df_for_download[final_ordered_columns_for_csv]
-        # Formatear la columna de fecha para la descarga
         if 'pickup_datetime' in df_for_download.columns:
             df_for_download['pickup_datetime'] = df_for_download['pickup_datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
         csv_data = df_for_download.to_csv(index=False).encode('utf-8')
@@ -262,4 +259,4 @@ if st.sidebar.button("Cerrar Sesión", key="logout_dashboard_page"):
         if key_session not in ['authenticated', 'username', 'role']:
             del st.session_state[key_session]
     st.session_state.authenticated = False
-    st.rerun()
+    
