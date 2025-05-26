@@ -85,7 +85,7 @@ if df is not None:
     desired_csv_columns_ordered = [
         'pickup_datetime', 'job_id', 'Categoria', 'estimated_payment', 
         'Categoria_viaje', 'latrecogida', 'lonrecogida', 
-        'latdestino', 'londestino', 'Convenio', 'ZonaOrigen', 'Zonadestino'
+        'latdestino', 'londestino', 'Convenio', 'Tipo_servicio', 'ZonaOrigen', 'Zonadestino'
     ]
     rename_map_for_csv = {
         'pickup_datetime': 'pickup_datetime',
@@ -97,9 +97,10 @@ if df is not None:
         'lonrecogida': 'lonrecogida',
         'latdestino': 'latdestino',
         'londestino': 'londestino',
-        'convenio': 'Convenio'
-        ,'zonaorigen' : 'ZonaOrigen'	
-        ,'zonadestino' : 'Zonadestino'
+        'convenio': 'Convenio',
+        'tipo_servicio' : 'Tipo_servicio',
+        'zonaorigen' : 'ZonaOrigen',	
+        'zonadestino' : 'Zonadestino'
     }
     columns_to_select_for_csv = [lc_col for lc_col in rename_map_for_csv.keys() if lc_col in df_filtered.columns]
     
