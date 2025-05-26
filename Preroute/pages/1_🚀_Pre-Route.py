@@ -7,6 +7,9 @@ from datetime import timedelta, time
 from PIL import Image
 import os
 import io
+import gspread
+from google.oauth2.service_account import Credentials
+from gspread_dataframe import set_with_dataframe
 
 # 1. st.set_page_config() es el PRIMER comando de Streamlit
 st.set_page_config(
@@ -21,6 +24,12 @@ if not st.session_state.get('authenticated', False):
     st.stop()
 
 # --- SI EL USUARIO ESTÁ AUTENTICADO, EL CÓDIGO CONTINÚA ---
+
+# --- INICIALIZACIÓN DE SESSION STATE PARA RESULTADOS (MEMORIA PERSISTENTE) ---
+if 'df_rutas_resultado' not in st.session_state:
+    st.session_state.df_rutas_resultado = pd.DataFrame()
+if 'df_no_asignadas_resultado' not in st.session_state:
+    st.session_state.df_no_asignadas_resultado = pd.DataFrame()
 
 # --- Estado de Sesión para Opciones de Filtro Dinámicas ---
 if 'df_pred_preview_options' not in st.session_state:
@@ -41,7 +50,7 @@ def create_template_csv(columns):
     return buffer.getvalue().encode('utf-8-sig')
 
 # --- Constantes ---
-LOGO_PATH = "Preroute/transvip.png" # Verifica esta ruta si tienes problemas con el logo
+LOGO_PATH = "Preroute/transvip.png"
 RADIO_TIERRA_KM = 6371
 PRECISION_SIMULATE_H3 = 1
 INTERVALO_CAMBIO_INTERREGIONAL = 270
@@ -174,19 +183,9 @@ st.sidebar.markdown("**Filtrar por Horario de Recogida (HH:MM):**")
 selected_start_time_user = st.sidebar.time_input('Desde la hora:', value=time(0, 0), key="pre_filter_start_time")
 selected_end_time_user = st.sidebar.time_input('Hasta la hora:', value=time(23, 59, 59), key="pre_filter_end_time")
 
-# --- Botón de ejecución ---
-st.header("3. Ejecutar Asignación", divider='blue')
-files_ready = uploaded_file_hist is not None and uploaded_file_pred is not None
-boton_ejecutar = st.button(
-    "🚀 Ejecutar Asignación",
-    disabled=not files_ready,
-    help="Debe cargar ambos archivos (Históricos y Predicciones) para poder ejecutar.",
-    type="primary",
-    use_container_width=True
-)
-st.write("---")
 
 # --- Definición de Funciones de Lógica de Negocio ---
+# (Se han omitido para brevedad, pero deben estar aquí en tu código real)
 def check_columns(df, required_columns, filename):
     missing_cols = [col for col in required_columns if col not in df.columns]
     if missing_cols:
@@ -290,140 +289,123 @@ def puede_agregarse_a_movil(movil_reservas, nueva_reserva, max_reservas_param_fu
     return True, tipo_int_base, intervalo_min_requerido, None
 
 
-# --- Lógica Principal de la Aplicación (Procesamiento de Fases) ---
-if files_ready and boton_ejecutar:
-    # Inicialización de variables para la lógica de Fases
-    df_hist = None; df_pred = None; summary_df = None; df_resultado = None
+# --- BLOQUE DE CÁLCULO PRINCIPAL ---
+st.header("3. Ejecutar Asignación", divider='blue')
+files_ready = uploaded_file_hist is not None and uploaded_file_pred is not None
+
+# El cálculo principal solo se ejecuta al presionar este botón
+if st.button(
+    "🚀 Ejecutar Asignación",
+    disabled=not files_ready,
+    help="Debe cargar ambos archivos (Históricos y Predicciones) para poder ejecutar.",
+    type="primary",
+    use_container_width=True
+):
+    # Inicialización de variables locales para el cálculo
     moviles = []; rutas_asignadas_list = []; reservas_no_asignadas_list = []
     
     # --- Fase 1: Lectura y Validación Inicial ---
     with st.expander("👁️ FASE 1: Lectura y Validación de Archivos", expanded=True):
         with st.spinner('Leyendo y validando archivos...'):
-            try:
-                df_hist = pd.read_csv(uploaded_file_hist)
-                st.write(f"✔️ Histórico '{uploaded_file_hist.name}' leído ({len(df_hist)} filas).")
-                check_columns(df_hist, REQUIRED_HIST_COLS, uploaded_file_hist.name) # Usa la función
-            except Exception as e: st.error(f"Error crítico Histórico: {e}"); st.stop()
+            df_hist = pd.read_csv(uploaded_file_hist)
+            st.write(f"✔️ Histórico '{uploaded_file_hist.name}' leído ({len(df_hist)} filas).")
+            check_columns(df_hist, REQUIRED_HIST_COLS, uploaded_file_hist.name)
 
-            try:
-                # Volver a leer uploaded_file_pred para obtener los datos frescos para df_pred
-                # uploaded_file_pred.seek(0) # Asegurar que el puntero esté al inicio
-                df_pred_original_temp = pd.read_csv(io.BytesIO(uploaded_file_pred.getvalue()))
-                df_pred = df_pred_original_temp.copy()
-                st.write(f"✔️ Predicciones '{uploaded_file_pred.name}' leído ({len(df_pred)} filas).")
-                check_columns(df_pred, REQUIRED_PRED_COLS_ORIGINAL, uploaded_file_pred.name) # Usa la función
-                
-                df_pred.rename(columns=RENAME_MAP_PRED, inplace=True)
-                check_columns(df_pred, REQUIRED_PRED_COLS_RENAMED, f"{uploaded_file_pred.name} (renombrado)") # Usa la función
-            except Exception as e: st.error(f"Error crítico Predicciones: {e}"); st.stop()
+            df_pred_original_temp = pd.read_csv(io.BytesIO(uploaded_file_pred.getvalue()))
+            df_pred = df_pred_original_temp.copy()
+            st.write(f"✔️ Predicciones '{uploaded_file_pred.name}' leído ({len(df_pred)} filas).")
+            check_columns(df_pred, REQUIRED_PRED_COLS_ORIGINAL, uploaded_file_pred.name)
             
-            try:
-                df_pred["HoraFecha"] = pd.to_datetime(df_pred["HoraFecha"], errors='coerce')
-                if df_pred["HoraFecha"].isnull().sum() > 0:
-                    st.warning(f"⚠️ {df_pred['HoraFecha'].isnull().sum()} fechas inválidas en Predicciones, filas eliminadas.")
-                    df_pred.dropna(subset=["HoraFecha"], inplace=True)
-                df_hist['tiempoestimada'] = pd.to_numeric(df_hist['tiempoestimada'], errors='coerce')
-                df_pred['estimated_payment'] = pd.to_numeric(df_pred['estimated_payment'], errors='coerce').fillna(0)
-                if df_pred.empty: st.error("No quedaron predicciones válidas tras limpieza inicial."); st.stop()
-            except Exception as e: st.error(f"Error en conversión de tipos: {e}"); st.stop()
+            df_pred.rename(columns=RENAME_MAP_PRED, inplace=True)
+            check_columns(df_pred, REQUIRED_PRED_COLS_RENAMED, f"{uploaded_file_pred.name} (renombrado)")
+            
+            df_pred["HoraFecha"] = pd.to_datetime(df_pred["HoraFecha"], errors='coerce')
+            if df_pred["HoraFecha"].isnull().sum() > 0:
+                st.warning(f"⚠️ {df_pred['HoraFecha'].isnull().sum()} fechas inválidas en Predicciones, filas eliminadas.")
+                df_pred.dropna(subset=["HoraFecha"], inplace=True)
+            df_hist['tiempoestimada'] = pd.to_numeric(df_hist['tiempoestimada'], errors='coerce')
+            df_pred['estimated_payment'] = pd.to_numeric(df_pred['estimated_payment'], errors='coerce').fillna(0)
+            if df_pred.empty: 
+                st.error("No quedaron predicciones válidas tras limpieza inicial.")
+                st.stop()
 
             if not df_pred.empty:
                 st.write("---"); st.write("🔎 Aplicando filtros de barra lateral (si se seleccionaron):")
-                initial_rows_bf_sidebar_filters = len(df_pred)
-                any_filter_applied_sidebar = False
-
-                if selected_categories_viaje_user: 
-                    any_filter_applied_sidebar = True; df_pred = df_pred[df_pred['Categoria_viaje'].isin(selected_categories_viaje_user)]
+                if selected_categories_viaje_user:
+                    df_pred = df_pred[df_pred['Categoria_viaje'].isin(selected_categories_viaje_user)]
                 if selected_convenios_user:
-                    if not df_pred.empty: any_filter_applied_sidebar = True; df_pred = df_pred[df_pred['Convenio'].isin(selected_convenios_user)]
+                    if not df_pred.empty: df_pred = df_pred[df_pred['Convenio'].isin(selected_convenios_user)]
                 if selected_categoria_pred_user:
-                    if not df_pred.empty and 'Categoria' in df_pred.columns: any_filter_applied_sidebar = True; df_pred = df_pred[df_pred['Categoria'].isin(selected_categoria_pred_user)]
+                    if not df_pred.empty and 'Categoria' in df_pred.columns: df_pred = df_pred[df_pred['Categoria'].isin(selected_categoria_pred_user)]
                 
-                default_start_time = time(0, 0); default_end_time = time(23, 59, 59)
-                is_time_filter_active = not (selected_start_time_user == default_start_time and selected_end_time_user == default_end_time)
+                is_time_filter_active = not (selected_start_time_user == time(0, 0) and selected_end_time_user == time(23, 59, 59))
                 if is_time_filter_active:
                     if not df_pred.empty and selected_start_time_user <= selected_end_time_user:
-                        any_filter_applied_sidebar = True
                         pickup_times = df_pred['HoraFecha'].dt.time
                         df_pred = df_pred[(pickup_times >= selected_start_time_user) & (pickup_times <= selected_end_time_user)]
-
-                if any_filter_applied_sidebar and not df_pred.empty:
-                    st.write(f"✔️ Filtros aplicados. Filas restantes en Predicciones: {len(df_pred)}.")
-                elif any_filter_applied_sidebar and df_pred.empty:
-                     st.error("Predicciones filtradas a cero tras aplicar filtros de barra lateral. Detenido."); st.stop()
-                else:
-                     st.write("ℹ️ No se activaron filtros de barra lateral o no afectaron el dataset.")
+                st.write(f"✔️ Filtros aplicados. Filas restantes en Predicciones: {len(df_pred)}.")
 
         st.success("Fase 1 completada.")
 
     # --- Fase 2: Procesamiento Histórico ---
-    with st.expander("⚙️ FASE 2: Procesamiento Histórico", expanded=False):
+    with st.expander("⚙️ FASE 2: Procesamiento Histórico", expanded=True):
         with st.spinner('Calculando rutas y promedios históricos...'):
-            try:
-                df_hist['h3_origin'] = simulate_h3_vectorized(df_hist['latrecogida'], df_hist['lonrecogida'])
-                df_hist['h3_destino'] = simulate_h3_vectorized(df_hist['latdestino'], df_hist['londestino'])
-                summary_df = df_hist.dropna(subset=['tiempoestimada', 'h3_origin', 'h3_destino']) \
-                                    .groupby(['h3_origin', 'h3_destino'], as_index=False)['tiempoestimada'] \
-                                    .mean().rename(columns={'tiempoestimada': 'avg_travel_time'})
-                if summary_df.empty: st.warning("⚠️ No se calcularon rutas promedio desde históricos.")
-            except Exception as e: st.error(f"Error en Fase 2: {e}"); st.stop()
+            df_hist['h3_origin'] = simulate_h3_vectorized(df_hist['latrecogida'], df_hist['lonrecogida'])
+            df_hist['h3_destino'] = simulate_h3_vectorized(df_hist['latdestino'], df_hist['londestino'])
+            summary_df = df_hist.dropna(subset=['tiempoestimada', 'h3_origin', 'h3_destino']) \
+                                .groupby(['h3_origin', 'h3_destino'], as_index=False)['tiempoestimada'] \
+                                .mean().rename(columns={'tiempoestimada': 'avg_travel_time'})
+            if summary_df.empty: st.warning("⚠️ No se calcularon rutas promedio desde históricos.")
         st.success("Fase 2 completada.")
 
     # --- Fase 3: Enriquecimiento de Predicciones ---
-    with st.expander("📈 FASE 3: Enriquecimiento de Predicciones", expanded=False):
+    with st.expander("📈 FASE 3: Enriquecimiento de Predicciones", expanded=True):
         if df_pred.empty: 
             st.warning("No hay datos de predicción para enriquecer. Saltando Fase 3.")
             df_resultado_sorted = pd.DataFrame() 
         else:
             with st.spinner('Enriqueciendo predicciones y aplicando orden de prioridad...'):
-                try:
-                    df_pred_copy = df_pred.copy() # Trabajar con una copia para no modificar df_pred original
-                    df_pred_copy['h3_origin'] = simulate_h3_vectorized(df_pred_copy['latrecogida'], df_pred_copy['lonrecogida'])
-                    df_pred_copy['h3_destino'] = simulate_h3_vectorized(df_pred_copy['latdestino'], df_pred_copy['londestino'])
-                    if summary_df is not None and not summary_df.empty:
-                        df_resultado = pd.merge(df_pred_copy, summary_df, on=['h3_origin', 'h3_destino'], how='left')
-                    else:
-                        df_resultado = df_pred_copy.copy(); df_resultado['avg_travel_time'] = np.nan
+                df_pred_copy = df_pred.copy()
+                df_pred_copy['h3_origin'] = simulate_h3_vectorized(df_pred_copy['latrecogida'], df_pred_copy['lonrecogida'])
+                df_pred_copy['h3_destino'] = simulate_h3_vectorized(df_pred_copy['latdestino'], df_pred_copy['londestino'])
+                
+                if 'summary_df' in locals() and not summary_df.empty:
+                    df_resultado = pd.merge(df_pred_copy, summary_df, on=['h3_origin', 'h3_destino'], how='left')
+                else:
+                    df_resultado = df_pred_copy.copy(); df_resultado['avg_travel_time'] = np.nan
+                
+                time_delta_hist = pd.to_timedelta(df_resultado['avg_travel_time'], unit='m', errors='coerce')
+                df_resultado['estimated_arrival'] = df_resultado['HoraFecha'] + time_delta_hist
+                mask_na_arrival = df_resultado['estimated_arrival'].isna()
+                
+                if mask_na_arrival.any():
+                    DEFAULT_TIME_SPECIAL_CONDITIONS = 200; DEFAULT_TIME_REGULAR = 70
+                    cat_viaje_lower = df_resultado.loc[mask_na_arrival, 'Categoria_viaje'].str.lower()
+                    cond_interregional = cat_viaje_lower == 'interregional'
+                    cond_division = cat_viaje_lower.isin(['division', 'divisiones'])
                     
-                    time_delta_hist = pd.to_timedelta(df_resultado['avg_travel_time'], unit='m', errors='coerce')
-                    df_resultado['estimated_arrival'] = df_resultado['HoraFecha'] + time_delta_hist
-                    mask_na_arrival = df_resultado['estimated_arrival'].isna()
-                    
-                    if mask_na_arrival.any():
-                        DEFAULT_TIME_SPECIAL_CONDITIONS = 200
-                        DEFAULT_TIME_REGULAR = 70
-                        cat_viaje_lower = df_resultado.loc[mask_na_arrival, 'Categoria_viaje'].str.lower() # Aplicar solo a las filas con NA
-                        cond_interregional = cat_viaje_lower == 'interregional'
-                        cond_division = cat_viaje_lower.isin(['division', 'divisiones'])
-                        
-                        df_resultado.loc[mask_na_arrival, 'default_time_min'] = np.where(
-                            cond_interregional | cond_division, 
-                            DEFAULT_TIME_SPECIAL_CONDITIONS, 
-                            DEFAULT_TIME_REGULAR
-                        )
-                        default_timedelta = pd.to_timedelta(df_resultado.loc[mask_na_arrival, 'default_time_min'], unit='m')
-                        df_resultado.loc[mask_na_arrival, 'estimated_arrival'] = df_resultado.loc[mask_na_arrival, 'HoraFecha'] + default_timedelta
-                        df_resultado.loc[mask_na_arrival, 'tiempo_usado'] = 'Default (' + df_resultado.loc[mask_na_arrival, 'default_time_min'].astype(str) + 'min)'
-                        df_resultado.drop(columns=['default_time_min'], inplace=True, errors='ignore') # errors='ignore' por si no todas las filas con NA tenían default_time_min
-                    
-                    df_resultado['tiempo_usado'].fillna('Historico', inplace=True) # Rellenar los que no eran NA
+                    df_resultado.loc[mask_na_arrival, 'default_time_min'] = np.where(cond_interregional | cond_division, DEFAULT_TIME_SPECIAL_CONDITIONS, DEFAULT_TIME_REGULAR)
+                    default_timedelta = pd.to_timedelta(df_resultado.loc[mask_na_arrival, 'default_time_min'], unit='m')
+                    df_resultado.loc[mask_na_arrival, 'estimated_arrival'] = df_resultado.loc[mask_na_arrival, 'HoraFecha'] + default_timedelta
+                    df_resultado.loc[mask_na_arrival, 'tiempo_usado'] = 'Default (' + df_resultado.loc[mask_na_arrival, 'default_time_min'].astype(str) + 'min)'
+                    df_resultado.drop(columns=['default_time_min'], inplace=True, errors='ignore')
+                
+                df_resultado.loc[df_resultado['tiempo_usado'].isnull(), 'tiempo_usado'] = 'Historico'
 
-                    df_resultado['is_obligatorio_convenio'] = df_resultado['Convenio'].isin(CONVENIOS_OBLIGATORIOS)
-                    if 'Categoria' in df_resultado.columns: df_resultado['is_supervip'] = (df_resultado['Categoria'] == 'SUPERVIP')
-                    else: df_resultado['is_supervip'] = False
-                    
-                    sort_by_cols = ['is_obligatorio_convenio']
-                    sort_ascending_flags = [False]
-                    if prioritize_supervip_param:
-                        sort_by_cols.append('is_supervip')
-                        sort_ascending_flags.append(False)
-                    sort_by_cols.extend(['HoraFecha', 'estimated_payment'])
-                    sort_ascending_flags.extend([True, False])
-                    
-                    df_resultado_sorted = df_resultado.sort_values(by=sort_by_cols, ascending=sort_ascending_flags, na_position='last').reset_index(drop=True)
-                    df_resultado_sorted.dropna(subset=['HoraFecha', 'estimated_arrival'], inplace=True) 
-                    if df_resultado_sorted.empty: st.warning("No hay predicciones válidas para asignar.");
-                except Exception as e: st.error(f"Error en Fase 3: {e}"); st.stop()
+                df_resultado['is_obligatorio_convenio'] = df_resultado['Convenio'].isin(CONVENIOS_OBLIGATORIOS)
+                df_resultado['is_supervip'] = (df_resultado['Categoria'] == 'SUPERVIP') if 'Categoria' in df_resultado.columns else False
+                
+                sort_by_cols = ['is_obligatorio_convenio']
+                sort_ascending_flags = [False]
+                if prioritize_supervip_param:
+                    sort_by_cols.append('is_supervip')
+                    sort_ascending_flags.append(False)
+                sort_by_cols.extend(['HoraFecha', 'estimated_payment'])
+                sort_ascending_flags.extend([True, False])
+                
+                df_resultado_sorted = df_resultado.sort_values(by=sort_by_cols, ascending=sort_ascending_flags, na_position='last').reset_index(drop=True)
+                df_resultado_sorted.dropna(subset=['HoraFecha', 'estimated_arrival'], inplace=True) 
+                if df_resultado_sorted.empty: st.warning("No hay predicciones válidas para asignar.")
             st.success("Fase 3 completada.")
 
     # --- Fase 4: Asignación de Reservas ---
@@ -440,15 +422,10 @@ if files_ready and boton_ejecutar:
                 for i, reserva_actual in enumerate(reservas_a_procesar):
                     progress_bar.progress((i + 1) / num_total_reservas)
                     status_text.text(f"Procesando reserva {i+1}/{num_total_reservas}...")
-                    asignado = False
-                    mejor_motivo_no_asignado = "No se encontró móvil compatible o límite de móviles."
+                    asignado = False; mejor_motivo_no_asignado = "No se encontró móvil compatible o límite de móviles."
 
                     for idx, movil_actual in enumerate(moviles):
-                        puede_agregar, tipo_rel, int_aplicado, motivo_rechazo = puede_agregarse_a_movil(
-                            movil_actual, reserva_actual,
-                            max_reservas_param, max_monto_param, max_horas_param,
-                            CONVENIOS_OBLIGATORIOS, MAX_INTERREGIONALES_POR_MOVIL, MAX_OTRAS_DIVISIONES_POR_MOVIL
-                        )
+                        puede_agregar, tipo_rel, int_aplicado, motivo_rechazo = puede_agregarse_a_movil(movil_actual, reserva_actual, max_reservas_param, max_monto_param, max_horas_param, CONVENIOS_OBLIGATORIOS, MAX_INTERREGIONALES_POR_MOVIL, MAX_OTRAS_DIVISIONES_POR_MOVIL)
                         if puede_agregar:
                             movil_actual.append(reserva_actual)
                             rutas_asignadas_list.append({"movil_id": idx + 1, **reserva_actual, "tipo_relacion": tipo_rel, "min_intervalo_aplicado": int_aplicado})
@@ -460,23 +437,48 @@ if files_ready and boton_ejecutar:
                             moviles.append([reserva_actual])
                             rutas_asignadas_list.append({"movil_id": len(moviles), **reserva_actual, "tipo_relacion": "Inicio Ruta", "min_intervalo_aplicado": 0})
                             asignado = True
-                        else:
-                            mejor_motivo_no_asignado = f"No puede iniciar ruta ({max_reservas_param} serv.) sin convenio oblig." if (mejor_motivo_no_asignado == "No se encontró móvil compatible o límite de móviles.") else mejor_motivo_no_asignado
+                        else: mejor_motivo_no_asignado = f"No puede iniciar ruta ({max_reservas_param} serv.) sin convenio oblig."
                     
                     if not asignado:
                         reserva_actual["motivo_no_asignado"] = mejor_motivo_no_asignado
                         reservas_no_asignadas_list.append(reserva_actual)
                 status_text.text("Asignación completada."); progress_bar.empty()
             st.success("Fase 4 completada.")
+    
+    # --- GUARDADO EN MEMORIA ---
+    # Al final del cálculo, guardamos los resultados en la memoria de la sesión.
+    st.session_state.df_rutas_resultado = pd.DataFrame(rutas_asignadas_list)
+    st.session_state.df_no_asignadas_resultado = pd.DataFrame(reservas_no_asignadas_list)
 
-    # --- Fase 5: Resultados Finales ---
-    with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
-        try:
-            df_rutas = pd.DataFrame(rutas_asignadas_list) if rutas_asignadas_list else pd.DataFrame()
-            df_no_asignadas = pd.DataFrame(reservas_no_asignadas_list) if reservas_no_asignadas_list else pd.DataFrame()
-            num_asignadas = len(df_rutas); num_no_asignadas = len(df_no_asignadas)
-            total_reservas_intentadas = len(df_resultado_sorted) if 'df_resultado_sorted' in locals() and isinstance(df_resultado_sorted, pd.DataFrame) and not df_resultado_sorted.empty else 0
-            num_moviles_usados = len(moviles)
+    # --- DEPURACIÓN (puedes descomentar estas líneas para verificar) ---
+    # st.success("✅ RESULTADOS GUARDADOS EN MEMORIA")
+    # st.write("Contenido de 'df_rutas_resultado' al momento de guardar:")
+    # st.dataframe(st.session_state.df_rutas_resultado)
+    # ---------------------------------------------------------------------
+
+st.write("---")
+
+# --- BLOQUE DE VISUALIZACIÓN DE RESULTADOS ---
+# Esta sección siempre se ejecuta para mostrar los resultados guardados en memoria.
+with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
+    try:
+        # --- DEPURACIÓN (puedes descomentar estas líneas para verificar) ---
+        # st.info("🔎 LEYENDO RESULTADOS DESDE MEMORIA...")
+        # st.write("Contenido de la memoria (`st.session_state`):")
+        # st.write(st.session_state)
+        # ---------------------------------------------------------------------
+
+        # LECTURA DESDE MEMORIA: Cargamos los DataFrames desde el estado de la sesión.
+        df_rutas = st.session_state.df_rutas_resultado
+        df_no_asignadas = st.session_state.df_no_asignadas_resultado
+
+        if df_rutas.empty and df_no_asignadas.empty:
+            st.info("Aún no se han generado rutas. Carga los archivos y presiona 'Ejecutar Asignación'.")
+        else:
+            num_asignadas = len(df_rutas)
+            num_no_asignadas = len(df_no_asignadas)
+            total_reservas_intentadas = num_asignadas + num_no_asignadas
+            num_moviles_usados = df_rutas['movil_id'].nunique() if not df_rutas.empty else 0
             monto_total_asignado = df_rutas['estimated_payment'].sum() if not df_rutas.empty else 0
             perc_asignadas = (num_asignadas / total_reservas_intentadas * 100) if total_reservas_intentadas > 0 else 0
 
@@ -489,29 +491,74 @@ if files_ready and boton_ejecutar:
 
             st.subheader("📋 Reservas Asignadas por Móvil")
             if not df_rutas.empty:
-                # Asegurar que solo columnas existentes se usen
                 cols_rutas_exist = [c for c in ['movil_id', 'reserva', 'HoraFecha', 'estimated_arrival', 'is_supervip', 'estimated_payment', 'Categoria_viaje', 'Categoria', 'Convenio', 'tipo_relacion', 'tiempo_usado'] if c in df_rutas.columns]
                 st.dataframe(df_rutas[cols_rutas_exist])
-                st.download_button("📥 Descargar rutas_asignadas.csv", df_rutas[cols_rutas_exist].to_csv(index=False, encoding='utf-8-sig'), "rutas_asignadas.csv", "text/csv", key="download_rutas")
-            else: st.info("No se asignaron rutas.")
 
+                # --- NUEVO: Crear dos columnas para alinear los botones ---
+                col1, col2 = st.columns(2)
+
+                # Botón de descarga en la primera columna
+                with col1:
+                    st.download_button(
+                        label="📥 Descargar rutas_asignadas.csv",
+                        data=df_rutas[cols_rutas_exist].to_csv(index=False, encoding='utf-8-sig'),
+                        file_name="rutas_asignadas.csv",
+                        mime="text/csv",
+                        key="download_rutas",
+                        use_container_width=True # Para que ocupe todo el ancho de la columna
+                    )
+
+                # Botón de envío a Google Sheets en la segunda columna
+                with col2:
+                    if st.button(
+                        "📤 Enviar Rutas a Google Sheet",
+                        key="send_to_gsheet",
+                        use_container_width=True # Para que ocupe todo el ancho de la columna
+                    ):
+                        with st.spinner("Enviando datos a Google Sheets..."):
+                            try:
+                                df_para_enviar = df_rutas[cols_rutas_exist].copy()
+                                if 'HoraFecha' in df_para_enviar.columns:
+                                    df_para_enviar['HoraFecha'] = pd.to_datetime(df_para_enviar['HoraFecha']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                                if 'estimated_arrival' in df_para_enviar.columns:
+                                    df_para_enviar['estimated_arrival'] = pd.to_datetime(df_para_enviar['estimated_arrival']).dt.strftime('%Y-%m-%d %H:%M:%S')
+
+                                scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+                                creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+                                gc = gspread.authorize(creds)
+
+                                nombre_spreadsheet = "RoutePlanning"
+                                nombre_worksheet = "RutaPreroute"
+                                sh = gc.open(nombre_spreadsheet).worksheet(nombre_worksheet)
+                                
+                                sh.clear()
+                                set_with_dataframe(sh, df_para_enviar)
+                                st.success(f"✅ ¡ÉXITO! Datos enviados a la pestaña '{nombre_worksheet}'!")
+
+                            except gspread.exceptions.SpreadsheetNotFound:
+                                st.error(f"❌ ERROR: Hoja de cálculo no encontrada. Revisa el nombre '{nombre_spreadsheet}' y los permisos.")
+                            except gspread.exceptions.WorksheetNotFound:
+                                st.error(f"❌ ERROR: Pestaña no encontrada. Revisa el nombre '{nombre_worksheet}'.")
+                            except gspread.exceptions.APIError as api_error:
+                                st.error(f"❌ ERROR DE API DE GOOGLE: {api_error}.")
+                            except Exception as e_gsheets:
+                                st.error(f"❌ Ocurrió un error inesperado: {e_gsheets}")
+            
             st.subheader("🚨 Reservas No Asignadas")
             if not df_no_asignadas.empty:
                 cols_no_asignadas_exist = [c for c in ['reserva', 'HoraFecha', 'is_supervip', 'estimated_payment', 'Categoria_viaje', 'Categoria', 'Convenio', 'motivo_no_asignado'] if c in df_no_asignadas.columns]
                 st.dataframe(df_no_asignadas[cols_no_asignadas_exist])
                 st.download_button("📥 Descargar reservas_no_asignadas.csv", df_no_asignadas[cols_no_asignadas_exist].to_csv(index=False, encoding='utf-8-sig'), "reservas_no_asignadas.csv", "text/csv", key="download_no_asignadas")
-            else: st.info("🎉 Todas las reservas válidas fueron asignadas o no hubo para procesar.")
-        except Exception as e: st.error(f"Error en Fase 5: {e}")
 
-elif not files_ready and boton_ejecutar:
-    st.warning("Por favor, asegúrese de que ambos archivos CSV estén cargados antes de ejecutar.")
-else:
-    st.info("DIAGNÓSTICO (Pre-Route): Esperando carga de archivos o clic en 'Ejecutar Asignación'. La página base está renderizada.")
+    except Exception as e:
+        st.error(f"Error en Fase 5: {e}")
 
 # Botón de logout en la barra lateral
 if st.sidebar.button("Cerrar Sesión", key="logout_preroute_page_final_main"):
-    for key_session in st.session_state.keys():
-        del st.session_state[key_session]
-    st.switch_page("Home.py")
-
-st.info("DIAGNÓSTICO (Pre-Route): Script FINALIZADO.")
+    for key_session in list(st.session_state.keys()):
+        # No borrar las claves de autenticación si existen
+        if key_session not in ['authenticated', 'username', 'role']:
+            del st.session_state[key_session]
+    # Redirigir o limpiar la página de una manera más controlada si es necesario
+    st.session_state.authenticated = False
+    st.rerun()
