@@ -1,4 +1,5 @@
 # pages/2_📊_Dashboard.py
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -17,7 +18,7 @@ if not st.session_state.get('authenticated', False):
 
 # --- SI EL USUARIO ESTÁ AUTENTICADO, EL CÓDIGO CONTINÚA DESDE AQUÍ ---
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def load_data_from_gsheet(sheet_url):
     try:
         csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
@@ -84,7 +85,7 @@ if df is not None:
     desired_csv_columns_ordered = [
         'pickup_datetime', 'job_id', 'Categoria', 'estimated_payment', 
         'Categoria_viaje', 'latrecogida', 'lonrecogida', 
-        'latdestino', 'londestino', 'Convenio'
+        'latdestino', 'londestino', 'Convenio', 'ZonaOrigen', 'Zonadestino'
     ]
     rename_map_for_csv = {
         'pickup_datetime': 'pickup_datetime',
@@ -97,6 +98,8 @@ if df is not None:
         'latdestino': 'latdestino',
         'londestino': 'londestino',
         'convenio': 'Convenio'
+        ,'zonaorigen' : 'ZonaOrigen'	
+        ,'zonadestino' : 'Zonadestino'
     }
     columns_to_select_for_csv = [lc_col for lc_col in rename_map_for_csv.keys() if lc_col in df_filtered.columns]
     
