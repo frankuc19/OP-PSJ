@@ -17,7 +17,7 @@ if not st.session_state.get('authenticated', False):
 
 # --- SI EL USUARIO ESTÁ AUTENTICADO, EL CÓDIGO CONTINÚA DESDE AQUÍ ---
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def load_data_from_gsheet(sheet_url):
     try:
         csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
