@@ -11,3 +11,4 @@ scikit-learn>=1.4
 bcrypt
 gspread
 gspread-dataframe
+google-auth-oauthlib
