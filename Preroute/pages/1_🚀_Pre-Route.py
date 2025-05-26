@@ -69,7 +69,7 @@ REQUIRED_HIST_COLS = [
 REQUIRED_PRED_COLS_ORIGINAL = [
     'pickup_datetime', 'job_id', 'Categoria', 'estimated_payment',
     'Categoria_viaje', 'latrecogida', 'lonrecogida',
-    'latdestino', 'londestino', 'Convenio'
+    'latdestino', 'londestino', 'Convenio', 'ZonaOrigen', 'Zonadestino'
 ]
 RENAME_MAP_PRED = {
     'pickup_datetime': 'HoraFecha', 'job_id': 'reserva',
@@ -498,7 +498,7 @@ with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
 
             st.subheader("📋 Reservas Asignadas por Móvil")
             if not df_rutas.empty:
-                cols_rutas_exist = [c for c in ['movil_id', 'reserva', 'HoraFecha', 'estimated_arrival', 'is_supervip', 'estimated_payment', 'Categoria_viaje', 'Categoria', 'Convenio', 'tipo_relacion', 'tiempo_usado'] if c in df_rutas.columns]
+                cols_rutas_exist = [c for c in ['movil_id', 'reserva', 'HoraFecha', 'estimated_arrival', 'is_supervip', 'estimated_payment', 'Categoria_viaje', 'Categoria', 'Convenio', 'tipo_relacion', 'tiempo_usado','ZonaOrigen', 'Zonadestino'] if c in df_rutas.columns]
                 st.dataframe(df_rutas[cols_rutas_exist])
 
                 # --- NUEVO: Crear dos columnas para alinear los botones ---
@@ -553,7 +553,7 @@ with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
             
             st.subheader("🚨 Reservas No Asignadas")
             if not df_no_asignadas.empty:
-                cols_no_asignadas_exist = [c for c in ['reserva', 'HoraFecha', 'is_supervip', 'estimated_payment', 'Categoria_viaje', 'Categoria', 'Convenio', 'motivo_no_asignado'] if c in df_no_asignadas.columns]
+                cols_no_asignadas_exist = [c for c in ['reserva', 'HoraFecha', 'is_supervip', 'estimated_payment', 'Categoria_viaje', 'Categoria', 'Convenio', 'motivo_no_asignado','ZonaOrigen', 'Zonadestino'] if c in df_no_asignadas.columns]
                 st.dataframe(df_no_asignadas[cols_no_asignadas_exist])
                 st.download_button("📥 Descargar reservas_no_asignadas.csv", df_no_asignadas[cols_no_asignadas_exist].to_csv(index=False, encoding='utf-8-sig'), "reservas_no_asignadas.csv", "text/csv", key="download_no_asignadas")
 
