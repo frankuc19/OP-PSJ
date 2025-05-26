@@ -390,7 +390,14 @@ if st.button(
                     df_resultado.loc[mask_na_arrival, 'tiempo_usado'] = 'Default (' + df_resultado.loc[mask_na_arrival, 'default_time_min'].astype(str) + 'min)'
                     df_resultado.drop(columns=['default_time_min'], inplace=True, errors='ignore')
                 
-                df_resultado.loc[df_resultado['tiempo_usado'].isnull(), 'tiempo_usado'] = 'Historico'
+                if 'tiempo_usado' in df_resultado.columns:
+                    # Si existe, llena los valores nulos como lo tenías planeado
+                    df_resultado.loc[df_resultado['tiempo_usado'].isnull(), 'tiempo_usado'] = 'Historico'
+                else:
+                    # Opcional: Si la columna no existe, puedes crearla
+                    # df_resultado['tiempo_usado'] = 'Historico' 
+                    # O puedes mostrar un error o simplemente ignorarlo
+                    st.warning("La columna 'tiempo_usado' no se encontró en los datos de origen y no se pudo procesar.")
 
                 df_resultado['is_obligatorio_convenio'] = df_resultado['Convenio'].isin(CONVENIOS_OBLIGATORIOS)
                 df_resultado['is_supervip'] = (df_resultado['Categoria'] == 'SUPERVIP') if 'Categoria' in df_resultado.columns else False
