@@ -3,6 +3,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import time # Importado para el filtro de hora
 
 # 1. st.set_page_config() es el PRIMER comando de Streamlit
 st.set_page_config(
@@ -22,25 +23,28 @@ if not st.session_state.get('authenticated', False):
 def load_data_from_gsheet(sheet_url):
     try:
         csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
-        # Leer el CSV manteniendo los nombres originales temporalmente
         df_original_case = pd.read_csv(csv_url)
         
-        df = df_original_case.copy() # Continuar con una copia para el procesamiento interno
-        df.columns = df.columns.str.lower().str.strip() # Convertir a minúsculas para uso interno
+        df = df_original_case.copy()
+        df.columns = df.columns.str.lower().str.strip()
 
-        df['pickup_datetime'] = pd.to_datetime(df['pickup_datetime'], errors='coerce')
+        # Asegurarse que la columna de fecha exista antes de procesarla
+        if 'pickup_datetime' in df.columns:
+            df['pickup_datetime'] = pd.to_datetime(df['pickup_datetime'], errors='coerce')
+        else:
+            st.warning("Advertencia en load_data: La columna 'pickup_datetime' no se encontró.")
+            return None # Devolver None si la columna de fecha es esencial
+        
         df['job_id'] = df['job_id'].astype(str)
         
         numeric_cols = ['estimated_payment', 'latrecogida', 'lonrecogida', 'latdestino', 'londestino', 'tiempoestimada', 'distancia']
         
-        # Asegurarse que estas columnas numéricas existan en el df en minúsculas
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             else:
                 st.warning(f"Advertencia en load_data: La columna numérica '{col}' no se encontró después de convertir a minúsculas.")
 
-        # Rellenar NaNs solo para las columnas numéricas que sí existen
         existing_numeric_cols = [col for col in numeric_cols if col in df.columns]
         df[existing_numeric_cols] = df[existing_numeric_cols].fillna(0)
         return df
@@ -57,6 +61,8 @@ df = load_data_from_gsheet(GSHEET_URL)
 
 if df is not None:
     st.sidebar.header("Filtros Interactivos")
+    
+    # --- Filtros existentes ---
     job_id_input = st.sidebar.text_input("Buscar por Job ID:", key="dashboard_job_id_filter")
     selected_convenios = st.sidebar.multiselect('Convenio:', options=sorted(df['convenio'].unique()) if 'convenio' in df.columns else [], default=[], key="dashboard_convenio_filter")
     selected_tipos_servicio = st.sidebar.multiselect('Tipo de Servicio:', options=sorted(df['tipo_servicio'].unique()) if 'tipo_servicio' in df.columns else [], default=[], key="dashboard_tipo_servicio_filter")
@@ -64,7 +70,36 @@ if df is not None:
     selected_zonas_destino = st.sidebar.multiselect('Zona de Destino:', options=sorted(df['zonadestino'].unique()) if 'zonadestino' in df.columns else [], default=[], key="dashboard_zona_destino_filter")
     selected_Categorias = st.sidebar.multiselect('Categoria de Viaje:', options=sorted(df['categoria_viaje'].unique()) if 'categoria_viaje' in df.columns else [], default=[], key="dashboard_Categoria_viaje_filter")
 
+    # --- NUEVO: Filtros de Fecha y Hora ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Filtro por Fecha y Hora de Recogida")
+
+    # Determinar las fechas mínima y máxima del dataset para los selectores
+    if not df['pickup_datetime'].isnull().all():
+        min_date_data = df['pickup_datetime'].min().date()
+        max_date_data = df['pickup_datetime'].max().date()
+    else:
+        # Fallback por si no hay fechas válidas
+        min_date_data = pd.Timestamp.now().date()
+        max_date_data = pd.Timestamp.now().date()
+
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        start_date = st.date_input("Fecha de inicio", value=min_date_data, min_value=min_date_data, max_value=max_date_data, key="dashboard_start_date")
+    with col2:
+        end_date = st.date_input("Fecha de fin", value=max_date_data, min_value=min_date_data, max_value=max_date_data, key="dashboard_end_date")
+
+    col3, col4 = st.sidebar.columns(2)
+    with col3:
+        start_time = st.time_input("Hora de inicio", value=time(0, 0), key="dashboard_start_time")
+    with col4:
+        end_time = st.time_input("Hora de fin", value=time(23, 59, 59), key="dashboard_end_time")
+    # --- FIN DE CAMBIO ---
+
+    # Aplicación de filtros
     df_filtered = df.copy()
+    
+    # Filtros existentes
     if job_id_input and 'job_id' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['job_id'] == job_id_input]
     if selected_convenios and 'convenio' in df_filtered.columns:
@@ -78,8 +113,24 @@ if df is not None:
     if selected_Categorias and 'categoria_viaje' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['categoria_viaje'].isin(selected_Categorias)]
 
+    # --- NUEVO: Aplicación de filtro de fecha y hora ---
+    if start_date > end_date:
+        st.sidebar.error("Error: La fecha de inicio no puede ser posterior a la fecha de fin.")
+    else:
+        # Filtrar por rango de fechas
+        df_filtered = df_filtered[
+            (df_filtered['pickup_datetime'].dt.date >= start_date) &
+            (df_filtered['pickup_datetime'].dt.date <= end_date)
+        ]
+        # Filtrar por rango de horas
+        df_filtered = df_filtered[
+            (df_filtered['pickup_datetime'].dt.time >= start_time) &
+            (df_filtered['pickup_datetime'].dt.time <= end_time)
+        ]
+    # --- FIN DE CAMBIO ---
+
     st.header("Vista de Datos")
-    st.dataframe(df_filtered) 
+    st.dataframe(df_filtered)
 
     # --- Descarga de CSV ---
     desired_csv_columns_ordered = [
@@ -99,7 +150,7 @@ if df is not None:
         'londestino': 'londestino',
         'convenio': 'Convenio',
         'tipo_servicio' : 'Tipo_servicio',
-        'zonaorigen' : 'ZonaOrigen',	
+        'zonaorigen' : 'ZonaOrigen',    
         'zonadestino' : 'Zonadestino'
     }
     columns_to_select_for_csv = [lc_col for lc_col in rename_map_for_csv.keys() if lc_col in df_filtered.columns]
@@ -110,6 +161,9 @@ if df is not None:
         df_for_download.rename(columns=current_rename_map, inplace=True)
         final_ordered_columns_for_csv = [col for col in desired_csv_columns_ordered if col in df_for_download.columns]
         df_for_download = df_for_download[final_ordered_columns_for_csv]
+        # Formatear la columna de fecha para la descarga
+        if 'pickup_datetime' in df_for_download.columns:
+            df_for_download['pickup_datetime'] = df_for_download['pickup_datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
         csv_data = df_for_download.to_csv(index=False).encode('utf-8')
     else:
         st.warning("No hay columnas seleccionables para la descarga según la configuración.")
@@ -128,8 +182,8 @@ if df is not None:
     if not df_filtered.empty:
         total_viajes = len(df_filtered)
         monto_total = df_filtered['estimated_payment'].sum() if 'estimated_payment' in df_filtered.columns else 0
-        distancia_promedio = df_filtered['distancia'].mean() if 'distancia' in df_filtered.columns else 0
-        tiempo_promedio = df_filtered['tiempoestimada'].mean() if 'tiempoestimada' in df_filtered.columns else 0
+        distancia_promedio = df_filtered['distancia'].mean() if 'distancia' in df_filtered.columns and df_filtered['distancia'].notna().any() else 0
+        tiempo_promedio = df_filtered['tiempoestimada'].mean() if 'tiempoestimada' in df_filtered.columns and df_filtered['tiempoestimada'].notna().any() else 0
     else:
         total_viajes, monto_total, distancia_promedio, tiempo_promedio = 0, 0, 0, 0
 
@@ -181,13 +235,8 @@ if df is not None:
         with col_convenio:
             st.subheader("📊 Viajes por Convenio")
             if 'convenio' in df_filtered.columns:
-                # 1. Filtrar para excluir el convenio 'PERSONAL' del DataFrame
                 df_convenio_chart = df_filtered[df_filtered['convenio'] != 'PERSONAL']
-                
-                # 2. Contar los valores. value_counts() ya ordena de mayor a menor por defecto.
                 convenio_counts = df_convenio_chart['convenio'].value_counts()
-                
-                # 3. Mostrar el gráfico con los datos filtrados y ordenados
                 st.bar_chart(convenio_counts)
             else:
                 st.warning("Columna 'convenio' no encontrada.")
@@ -210,5 +259,7 @@ else:
 
 if st.sidebar.button("Cerrar Sesión", key="logout_dashboard_page"):
     for key_session in st.session_state.keys():
-        del st.session_state[key_session]
-    st.switch_page("Home.py")
+        if key_session not in ['authenticated', 'username', 'role']:
+            del st.session_state[key_session]
+    st.session_state.authenticated = False
+    st.rerun()
