@@ -3,7 +3,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import timedelta, time
+from datetime import timedelta, time, date
 from PIL import Image
 import os
 import io
@@ -175,10 +175,22 @@ elif current_pred_filename_state is not None:
 st.sidebar.header("Filtros Adicionales (Predicciones)")
 if not st.session_state.df_pred_preview_options.get("file_name"):
     st.sidebar.info("Cargue el archivo de Predicciones para ver los filtros.")
+
 selected_categories_viaje_user = st.sidebar.multiselect('1. Filtrar por Categoria_viaje:', options=st.session_state.df_pred_preview_options.get("categories_viaje", []), key="pre_filter_cat_viaje")
 selected_convenios_user = st.sidebar.multiselect('2. Filtrar por Convenio:', options=st.session_state.df_pred_preview_options.get("convenios", []), key="pre_filter_convenio")
 selected_categoria_pred_user = st.sidebar.multiselect("3. Filtrar por Categoria:", options=st.session_state.df_pred_preview_options.get("categories_pred", []), key="pre_filter_cat_pred")
 st.sidebar.markdown("---")
+
+# --- NUEVO: Filtro de Fecha ---
+st.sidebar.markdown("**Filtrar por Fecha de Recogida:**")
+selected_date_user = st.sidebar.date_input(
+    'Seleccionar fecha:',
+    value=None,  # Por defecto no hay ninguna fecha seleccionada
+    key="pre_filter_date",
+    help="Filtra las reservas para una fecha específica. Déjelo en blanco para no filtrar por fecha."
+)
+# --- FIN DE CAMBIO ---
+
 st.sidebar.markdown("**Filtrar por Horario de Recogida (HH:MM):**")
 selected_start_time_user = st.sidebar.time_input('Desde la hora:', value=time(0, 0), key="pre_filter_start_time")
 selected_end_time_user = st.sidebar.time_input('Hasta la hora:', value=time(23, 59, 59), key="pre_filter_end_time")
@@ -338,6 +350,13 @@ if st.button(
                 if selected_categoria_pred_user:
                     if not df_pred.empty and 'Categoria' in df_pred.columns: df_pred = df_pred[df_pred['Categoria'].isin(selected_categoria_pred_user)]
                 
+                # --- NUEVO: Aplicación del filtro de fecha ---
+                if selected_date_user is not None:
+                    if not df_pred.empty:
+                        # Compara solo la parte de la fecha de la columna 'HoraFecha'
+                        df_pred = df_pred[df_pred['HoraFecha'].dt.date == selected_date_user]
+                # --- FIN DE CAMBIO ---
+                
                 is_time_filter_active = not (selected_start_time_user == time(0, 0) and selected_end_time_user == time(23, 59, 59))
                 if is_time_filter_active:
                     if not df_pred.empty and selected_start_time_user <= selected_end_time_user:
@@ -457,24 +476,11 @@ if st.button(
     st.session_state.df_rutas_resultado = pd.DataFrame(rutas_asignadas_list)
     st.session_state.df_no_asignadas_resultado = pd.DataFrame(reservas_no_asignadas_list)
 
-    # --- DEPURACIÓN (puedes descomentar estas líneas para verificar) ---
-    # st.success("✅ RESULTADOS GUARDADOS EN MEMORIA")
-    # st.write("Contenido de 'df_rutas_resultado' al momento de guardar:")
-    # st.dataframe(st.session_state.df_rutas_resultado)
-    # ---------------------------------------------------------------------
-
 st.write("---")
 
 # --- BLOQUE DE VISUALIZACIÓN DE RESULTADOS ---
-# Esta sección siempre se ejecuta para mostrar los resultados guardados en memoria.
 with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
     try:
-        # --- DEPURACIÓN (puedes descomentar estas líneas para verificar) ---
-        # st.info("🔎 LEYENDO RESULTADOS DESDE MEMORIA...")
-        # st.write("Contenido de la memoria (`st.session_state`):")
-        # st.write(st.session_state)
-        # ---------------------------------------------------------------------
-
         # LECTURA DESDE MEMORIA: Cargamos los DataFrames desde el estado de la sesión.
         df_rutas = st.session_state.df_rutas_resultado
         df_no_asignadas = st.session_state.df_no_asignadas_resultado
@@ -501,10 +507,7 @@ with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
                 cols_rutas_exist = [c for c in ['movil_id', 'reserva', 'HoraFecha', 'estimated_arrival', 'is_supervip', 'estimated_payment', 'Categoria_viaje', 'Categoria', 'Convenio', 'tipo_relacion', 'tiempo_usado', 'Tipo_servicio', 'ZonaOrigen', 'Zonadestino'] if c in df_rutas.columns]
                 st.dataframe(df_rutas[cols_rutas_exist])
 
-                # --- NUEVO: Crear dos columnas para alinear los botones ---
                 col1, col2 = st.columns(2)
-
-                # Botón de descarga en la primera columna
                 with col1:
                     st.download_button(
                         label="📥 Descargar rutas_asignadas.csv",
@@ -512,15 +515,13 @@ with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
                         file_name="rutas_asignadas.csv",
                         mime="text/csv",
                         key="download_rutas",
-                        use_container_width=True # Para que ocupe todo el ancho de la columna
+                        use_container_width=True
                     )
-
-                # Botón de envío a Google Sheets en la segunda columna
                 with col2:
                     if st.button(
                         "📤 Enviar Rutas a Google Sheet",
                         key="send_to_gsheet",
-                        use_container_width=True # Para que ocupe todo el ancho de la columna
+                        use_container_width=True
                     ):
                         with st.spinner("Enviando datos a Google Sheets..."):
                             try:
@@ -563,9 +564,7 @@ with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
 # Botón de logout en la barra lateral
 if st.sidebar.button("Cerrar Sesión", key="logout_preroute_page_final_main"):
     for key_session in list(st.session_state.keys()):
-        # No borrar las claves de autenticación si existen
         if key_session not in ['authenticated', 'username', 'role']:
             del st.session_state[key_session]
-    # Redirigir o limpiar la página de una manera más controlada si es necesario
     st.session_state.authenticated = False
     st.rerun()
