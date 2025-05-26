@@ -1,33 +1,23 @@
 # pages/0_💡_Glosario.py
 
 import streamlit as st
-import random
+import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Navega en las pestañas de la app",
+    page_title="Directorio de Recursos",
     page_icon="💡",
     layout="wide"
 )
 
 # --- DATOS (sin cambios) ---
-
-# 1. Categorías
 CATEGORIES = [
     "All", "Analytics", "Marketing", "Productivity", "Sales", "Finance",
     "Communication", "Cloud Services", "Security", "Design", "Development",
     "Human Resources", "Customer Support", "E-commerce", "Social Media",
 ]
-
-# 2. Paleta de Colores
-COLOR_PALETTE = [
-    "#FF4A00", "#96BF48", "#E37400", "#FFE01B", "#F06A6A", "#FFCC22",
-    "#6772E5", "#F22F46", "#2D8CFF", "#0061FF", "#00A1E0", "#D32D27",
-    "#4CAF50", "#9C27B0", "#FF9800", "#795548", "#607D8B", "#3F51B5",
-    "#00BCD4", "#FFC107",
-]
-
-# 3. Mapa de Íconos (SVGs de Feather Icons, equivalentes a Lucide)
 ICON_MAP = {
     "Zap": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>""",
     "ShoppingCart": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>""",
@@ -39,24 +29,33 @@ ICON_MAP = {
     "Shield": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>""",
 }
 
-# --- FUNCIÓN PARA GENERAR DATOS ---
-@st.cache_data
-def generate_integrations(count: int):
-    integrations = []
-    icon_keys = list(ICON_MAP.keys())
-    for i in range(count):
-        category = random.choice(CATEGORIES[1:])
-        integrations.append({
-            "id": f"{i + 1}", "name": f"Integration {i + 1}",
-            "description": f"This is a detailed description for Integration #{i+1}. It provides {category.lower()} services to streamline your workflow.",
-            "category": category, "icon": random.choice(icon_keys), "color": random.choice(COLOR_PALETTE),
-        })
-    return integrations
+@st.cache_data(ttl=600)
+def load_data_from_sheet():
+    try:
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=scopes
+        )
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("Glosario")
+        worksheet = spreadsheet.sheet1
+        data = worksheet.get_all_records()
+        df = pd.DataFrame(data)
+        df = df.fillna('') 
+        return df.to_dict('records')
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("Error: No se encontró la hoja de cálculo 'Glosario'. Revisa el nombre y que la hayas compartido.")
+        return []
+    except Exception as e:
+        st.error(f"Ocurrió un error al conectar con Google Sheets: {e}")
+        return []
 
-# --- CSS PARA EL DISEÑO DE LA PÁGINA (TEMA OSCURO) ---
 st.markdown("""
 <style>
-    /* Fondo animado oscuro */
     @keyframes gradient_flow {
         0% { background-position: 0% 50%; }
         50% { background-position: 100% 50%; }
@@ -67,123 +66,75 @@ st.markdown("""
         background-size: 400% 400%;
         animation: gradient_flow 15s ease infinite;
     }
-    
-    /* Color de texto principal */
-    .main .block-container {
-        color: #e0e0e0;
-    }
-
-    /* Estilo del contenedor de filtros */
-    .stRadio > div {
-        flex-direction: row;
-        flex-wrap: wrap;
-        gap: 10px;
-    }
+    .main .block-container { color: #e0e0e0; }
+    .stRadio > div { flex-direction: row; flex-wrap: wrap; gap: 10px; }
     .stRadio > div > label {
-        background-color: rgba(255, 255, 255, 0.1);
-        border-radius: 20px;
-        padding: 5px 15px;
-        transition: all 0.2s ease-in-out;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        color: #d0d0d0; /* Letras de los filtros en gris claro */
+        background-color: rgba(255, 255, 255, 0.1); border-radius: 20px;
+        padding: 5px 15px; transition: all 0.2s ease-in-out;
+        border: 1px solid rgba(255, 255, 255, 0.2); color: #d0d0d0;
     }
-    /* Estilo del filtro seleccionado (naranja) */
     .stRadio > div > label[data-baseweb="radio"]:has(> div > input:checked) {
-        background-color: #ff8c00;
-        color: black; /* Letras negras para contraste con el fondo naranja */
-        border-color: #ff8c00;
-        font-weight: 600;
+        background-color: #ff8c00; color: black; border-color: #ff8c00; font-weight: 600;
     }
-    
-    /* Diseño de la tarjeta de integración (efecto vidrio) */
     .integration-card {
-        background: rgba(20, 20, 20, 0.7);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        border-radius: 10px;
-        padding: 20px;
+        background: rgba(20, 20, 20, 0.7); backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px); border-radius: 10px; padding: 20px;
         transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
+        height: 100%; display: flex; flex-direction: column;
         border: 1px solid rgba(255, 255, 255, 0.1);
     }
     .integration-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        transform: translateY(-5px); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
         border-color: rgba(255, 140, 0, 0.5);
     }
     .icon-container {
-        width: 50px;
-        height: 50px;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: 15px;
+        width: 50px; height: 50px; border-radius: 8px; display: flex;
+        align-items: center; justify-content: center; margin-bottom: 15px;
     }
-    .icon-container svg {
-        stroke: white;
-        width: 28px;
-        height: 28px;
-    }
-    .integration-card h3 {
-        margin: 0 0 10px 0;
-        color: #ffffff;
-        font-size: 1.1rem;
-    }
+    .icon-container svg { stroke: white; width: 28px; height: 28px; }
+    .integration-card h3 { margin: 0 0 10px 0; color: #ffffff; font-size: 1.1rem; }
     .integration-card p {
-        color: #b0b0b0;
-        font-size: 0.9rem;
-        flex-grow: 1;
-        margin-bottom: 15px;
+        color: #b0b0b0; font-size: 0.9rem; flex-grow: 1; margin-bottom: 15px;
     }
-    .category-tag {
-        align-self: flex-start;
-        background-color: rgba(255, 255, 255, 0.1);
-        color: #d0d0d0;
-        border-radius: 5px;
-        padding: 4px 8px;
-        font-size: 0.75rem;
-        font-weight: 600;
+    .resource-expert {
+        font-size: 0.85rem; color: #b0b0b0; margin-top: auto;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        padding-top: 10px; margin-top: 15px;
     }
+    .action-button {
+        display: block; text-align: center; padding: 10px; border-radius: 5px;
+        text-decoration: none; color: white; font-weight: 600;
+        margin-top: 15px; transition: filter 0.2s ease;
+    }
+    .action-button:hover { filter: brightness(1.2); }
 </style>
 """, unsafe_allow_html=True)
 
-
-# --- RENDERIZADO DE LA PÁGINA ---
-
-# Título y descripción con Markdown para asegurar el color blanco
-st.markdown("<h1 style='color: white;'>Contenedores de Información</h1>", unsafe_allow_html=True)
-st.markdown("<p style='color: #d0d0d0;'>Información que podras consultar buscando por contenedor, solo selecciona uno y vera información de relevancia</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='color: white;'>Directorio de Recursos y Herramientas</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color: #d0d0d0;'>Encuentra la herramienta que necesitas. Filtra por categoría y accede directamente o contacta al experto.</p>", unsafe_allow_html=True)
 st.write("---")
 
-# Generar y cachear los datos
 if 'integrations_data' not in st.session_state:
-    st.session_state.integrations_data = generate_integrations(50)
+    st.session_state.integrations_data = load_data_from_sheet()
 
 all_integrations = st.session_state.integrations_data
 
-# 1. Filtro de Categorías
 selected_category = st.radio(
-    "Filter by category:",
-    CATEGORIES,
-    horizontal=True,
-    label_visibility="collapsed"
+    "Filtrar por categoría:", CATEGORIES, horizontal=True, label_visibility="collapsed"
 )
 
-# 2. Lógica de Filtrado
 if selected_category == "All":
     filtered_integrations = all_integrations
 else:
     filtered_integrations = [
-        i for i in all_integrations if i["category"] == selected_category
+        i for i in all_integrations if i.get("category") == selected_category
     ]
 
-if not filtered_integrations:
-    st.warning(f"No integrations found in the category '{selected_category}'.")
+if not all_integrations:
+    st.info("Cargando datos o la hoja de cálculo está vacía...")
+elif not filtered_integrations:
+    st.warning(f"No se encontraron recursos en la categoría '{selected_category}'.")
 else:
-    # 3. Cuadrícula de Integraciones
     num_columns = 3
     cols = st.columns(num_columns)
     
@@ -192,12 +143,17 @@ else:
         with col:
             card_html = f"""
             <div class="integration-card">
-                <div class="icon-container" style="background-color: {integration['color']};">
-                    {ICON_MAP[integration['icon']]}
+                <div class="icon-container" style="background-color: {integration.get('color', '#607D8B')};">
+                    {ICON_MAP.get(integration.get('icon', 'Shield'), ICON_MAP['Shield'])}
                 </div>
-                <h3>{integration['name']}</h3>
-                <p>{integration['description']}</p>
-                <div class="category-tag">{integration['category']}</div>
+                <h3>{integration.get('name', 'Sin Nombre')}</h3>
+                <p>{integration.get('description', 'Sin Descripción')}</p>
+                <div class="resource-expert">
+                    <strong>Experto:</strong> {integration.get('expert', 'No asignado')}
+                </div>
+                <a href="{integration.get('action_url', '#')}" target="_blank" class="action-button" style="background-color: {integration.get('color', '#607D8B')};">
+                    {integration.get('action_text', 'Acceder')}
+                </a>
             </div>
             """
             st.markdown(card_html, unsafe_allow_html=True)
