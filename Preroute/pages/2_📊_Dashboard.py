@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import time
-import streamlit.components.v1 as components # NUEVO: Importación para el auto-refresco
+# Se eliminó la importación de 'components' que ya no es necesaria
 
 # 1. st.set_page_config() es el PRIMER comando de Streamlit
 st.set_page_config(
@@ -20,11 +20,11 @@ if not st.session_state.get('authenticated', False):
 
 # --- SI EL USUARIO ESTÁ AUTENTICADO, EL CÓDIGO CONTINÚA DESDE AQUÍ ---
 
-# MODIFICADO: El TTL se reduce a 60 segundos para una actualización más frecuente.
-@st.cache_data(ttl=60)
+# MODIFICADO: Se elimina el TTL para que la actualización sea manual con el botón.
+@st.cache_data
 def load_data_from_gsheet(sheet_url):
     """
-    Carga datos desde Google Sheets. La caché expira cada 60 segundos.
+    Carga datos desde Google Sheets. La caché se limpia manualmente con el botón de actualizar.
     """
     try:
         csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
@@ -58,10 +58,8 @@ def load_data_from_gsheet(sheet_url):
         return None
 
 st.title("📊 Dashboard de Operaciones")
-st.write("Análisis interactivo de los datos de viajes cargados. La información se actualiza automáticamente cada 60 segundos.")
-
-# NUEVO: Componente que fuerza el refresco de la página cada 60 segundos.
-components.html("<meta http-equiv='refresh' content='60'>", height=0)
+# MODIFICADO: El texto ahora indica que la actualización es manual.
+st.write("Análisis interactivo de los datos de viajes cargados. Usa el botón en la barra lateral para actualizar la tabla.")
 
 GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ZLwfPqKG2LP2eqp7hDkFeUCSw2jsgGhkmek3xL2KzGc/edit?usp=sharing"
 df = load_data_from_gsheet(GSHEET_URL)
@@ -69,6 +67,11 @@ df = load_data_from_gsheet(GSHEET_URL)
 if df is not None:
     st.sidebar.header("Filtros Interactivos")
     
+    # --- NUEVO: Botón para actualizar la tabla ---
+    if st.sidebar.button("🔄 Actualizar Tabla"):
+        st.cache_data.clear() # Limpia la caché de datos
+        st.rerun() # Vuelve a ejecutar el script para recargar los datos
+
     # --- Filtros existentes ---
     job_id_input = st.sidebar.text_input("Buscar por Job ID:", key="dashboard_job_id_filter")
     selected_convenios = st.sidebar.multiselect('Convenio:', options=sorted(df['convenio'].unique()) if 'convenio' in df.columns else [], default=[], key="dashboard_convenio_filter")
@@ -259,4 +262,4 @@ if st.sidebar.button("Cerrar Sesión", key="logout_dashboard_page"):
         if key_session not in ['authenticated', 'username', 'role']:
             del st.session_state[key_session]
     st.session_state.authenticated = False
-    
+    st.rerun()
