@@ -10,5 +10,16 @@ geopy>=2.4
 scikit-learn>=1.4
 bcrypt
 gspread
+<<<<<<< HEAD
 gspread-dataframe
 google-auth-oauthlib
+=======
+tensorflow 
+scikit-learn 
+imbalanced-learn 
+joblib 
+openpyxl
+streamlit_option_menu
+gspread-dataframe 
+oauth2client
+>>>>>>> c4dc5e1 (feat: Integra el modelo de IA y actualiza los requisitos)

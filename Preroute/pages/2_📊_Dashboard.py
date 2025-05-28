@@ -262,4 +262,8 @@ if st.sidebar.button("Cerrar Sesión", key="logout_dashboard_page"):
         if key_session not in ['authenticated', 'username', 'role']:
             del st.session_state[key_session]
     st.session_state.authenticated = False
+<<<<<<< HEAD
     st.rerun()
+=======
+    st.rerun()
+>>>>>>> c4dc5e1 (feat: Integra el modelo de IA y actualiza los requisitos)
