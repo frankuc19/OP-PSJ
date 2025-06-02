@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
 import io
+import numpy as np # Import numpy for handling potential division by zero
 
 # --- 0. Configuración de Nombres de Columnas (igual que tu script) ---
 FECHA_COLUMN_NAME = 'Fecha'
@@ -146,18 +147,15 @@ def train_and_forecast_service(_df_prophet_train_arg, _df_feriados_eventos_proce
 
         if _df_feriados_eventos_processed_arg is not None and not _df_feriados_eventos_processed_arg.empty:
             service_holiday_impacts = []
-            unique_holidays = _df_feriados_eventos_processed_arg['holiday'].unique()
-            for hol_name in unique_holidays:
-                col_name_options = [hol_name, hol_name.replace(' ', '_')] 
-                actual_col_name = next((opt for opt in col_name_options if opt in forecast_df.columns), None)
-                if actual_col_name:
-                    holiday_effect = forecast_df[forecast_df[actual_col_name].abs() > 1e-6] 
-                    if not holiday_effect.empty:
-                        avg_impact = holiday_effect[actual_col_name].mean()
+            for hol_name in _df_feriados_eventos_processed_arg['holiday'].unique():
+                if hol_name in forecast_df.columns:
+                    holiday_effect_values = forecast_df[forecast_df[hol_name].abs() > 1e-6][hol_name]
+                    if not holiday_effect_values.empty:
+                        avg_impact = holiday_effect_values.mean()
                         service_holiday_impacts.append({
                             'feriado': hol_name, 
                             'impacto_promedio': avg_impact, 
-                            'dias_afectados': len(holiday_effect)
+                            'dias_afectados': len(holiday_effect_values)
                         })
             if service_holiday_impacts:
                 holiday_impacts_df = pd.DataFrame(service_holiday_impacts).sort_values(by='impacto_promedio', key=abs, ascending=False)
@@ -249,11 +247,18 @@ if df_demanda_full is not None:
     holidays_prior_scale_global = adv_settings.number_input("Holidays Prior Scale:", 0.01, 10.0, 1.0, 0.01, format="%.2f", key="hps_input")
 
     if selected_service_types:
-        tab_overview, tab_service_detail, tab_data_explorer = st.tabs(["📈 Resumen General", "🔍 Análisis por Servicio", "📄 Explorador de Datos"])
+        tab_titles = [
+            "📈 Resumen General", 
+            "🔍 Análisis por Servicio", 
+            "📄 Explorador de Datos",
+            "🎯 Análisis de Impacto y Variación"
+        ]
+        tab_overview, tab_service_detail, tab_data_explorer, tab_analisis_impacto = st.tabs(tab_titles)
+
 
         all_forecasts_list = []
         all_metrics_list = []
-        all_holiday_impacts_list_global = []
+        all_holiday_impacts_list_global = [] 
         processed_services_forecasts = {} 
         
         progress_bar = st.progress(0)
@@ -333,20 +338,19 @@ if df_demanda_full is not None:
                     'metrics': metrics, 
                     'fig_components': fig_components_service, 
                     'train_data': df_prophet_train,
-                    'holiday_impacts_df': holiday_impacts_df_service
+                    'holiday_impacts_df': holiday_impacts_df_service 
                 }
                 all_forecasts_list.append(forecast[['ds', 'yhat']].copy()) 
                 all_metrics_list.append({'servicio': service_type, **metrics, 'puntos_datos': len(df_prophet_train)})
                 if not holiday_impacts_df_service.empty:
-                     all_holiday_impacts_list_global.extend([{'servicio': service_type, **imp} for imp in holiday_impacts_df_service.to_dict('records')])
+                     all_holiday_impacts_list_global.extend([{'servicio': service_type, **imp_dict} 
+                                                             for imp_dict in holiday_impacts_df_service.to_dict('records')])
             progress_bar.progress((i + 1) / total_services_to_process)
         status_text.text(f"Procesamiento completado para {len(processed_services_forecasts)} de {total_services_to_process} servicios seleccionados.")
 
 
-        # --- Pestaña: Resumen General ---
         with tab_overview:
             st.header("📈 Resumen General de Pronósticos")
-
             if not all_forecasts_list:
                 st.warning("No hay pronósticos individuales para agregar. Revisa la selección de servicios o los datos de entrada.")
             else:
@@ -385,54 +389,57 @@ if df_demanda_full is not None:
                         df_total_prev_year_agg.rename(columns={'y_total_actual': 'y_total_prev_year'}, inplace=True)
                         df_total_prev_year_agg['ds'] = df_total_prev_year_agg['ds'] + pd.DateOffset(years=1)
 
-                    df_all_forecasts_concat = pd.concat(all_forecasts_list)
-                    df_total_forecast_agg = df_all_forecasts_concat.groupby('ds')['yhat'].sum().reset_index().rename(columns={'yhat': 'yhat_total_forecast'})
-                    df_total_forecast_agg.sort_values('ds', inplace=True)
+                    if all_forecasts_list: 
+                        df_all_forecasts_concat = pd.concat(all_forecasts_list)
+                        df_total_forecast_agg = df_all_forecasts_concat.groupby('ds')['yhat'].sum().reset_index().rename(columns={'yhat': 'yhat_total_forecast'})
+                        df_total_forecast_agg.sort_values('ds', inplace=True)
 
-                    df_general_plot = df_total_forecast_agg
-                    if df_total_actuals_agg is not None:
-                        df_general_plot = pd.merge(df_general_plot, df_total_actuals_agg, on='ds', how='outer')
-                    if df_total_prev_year_agg is not None:
-                        df_general_plot = pd.merge(df_general_plot, df_total_prev_year_agg, on='ds', how='outer')
-                    
-                    df_general_plot.sort_values('ds', inplace=True)
-                    
-                    if not df_general_plot.empty:
-                        min_date_overall = df_general_plot['ds'].min()
-                        max_date_overall = df_general_plot['ds'].max()
+                        df_general_plot = df_total_forecast_agg
+                        if df_total_actuals_agg is not None:
+                            df_general_plot = pd.merge(df_general_plot, df_total_actuals_agg, on='ds', how='outer')
+                        if df_total_prev_year_agg is not None:
+                            df_general_plot = pd.merge(df_general_plot, df_total_prev_year_agg, on='ds', how='outer')
                         
-                        date_range_overall = st.slider(
-                            "Rango de fechas para gráfico general:",
-                            min_value=min_date_overall.to_pydatetime(),
-                            max_value=max_date_overall.to_pydatetime(),
-                            value=(max(min_date_overall.to_pydatetime(), (max_date_overall - pd.DateOffset(years=3)).to_pydatetime()), max_date_overall.to_pydatetime()), 
-                            format="DD/MM/YYYY",
-                            key="date_range_slider_overview_tab" 
-                        )
-                        start_date_overall, end_date_overall = date_range_overall
-                        df_general_plot_filtered = df_general_plot[
-                            (df_general_plot['ds'] >= pd.to_datetime(start_date_overall)) &
-                            (df_general_plot['ds'] <= pd.to_datetime(end_date_overall))
-                        ]
+                        df_general_plot.sort_values('ds', inplace=True)
+                        
+                        if not df_general_plot.empty:
+                            min_date_overall = df_general_plot['ds'].min()
+                            max_date_overall = df_general_plot['ds'].max()
+                            
+                            date_range_overall = st.slider(
+                                "Rango de fechas para gráfico general:",
+                                min_value=min_date_overall.to_pydatetime(),
+                                max_value=max_date_overall.to_pydatetime(),
+                                value=(max(min_date_overall.to_pydatetime(), (max_date_overall - pd.DateOffset(years=3)).to_pydatetime()), max_date_overall.to_pydatetime()), 
+                                format="DD/MM/YYYY",
+                                key="date_range_slider_overview_tab" 
+                            )
+                            start_date_overall, end_date_overall = date_range_overall
+                            df_general_plot_filtered = df_general_plot[
+                                (df_general_plot['ds'] >= pd.to_datetime(start_date_overall)) &
+                                (df_general_plot['ds'] <= pd.to_datetime(end_date_overall))
+                            ]
 
-                        fig_plotly_general = go.Figure()
-                        if 'y_total_actual' in df_general_plot_filtered.columns:
-                            fig_plotly_general.add_trace(go.Scatter(x=df_general_plot_filtered['ds'], y=df_general_plot_filtered['y_total_actual'], mode='lines+markers', name='Demanda Real Total', marker=dict(size=5), line=dict(color='navy')))
-                        if 'yhat_total_forecast' in df_general_plot_filtered.columns:
-                            fig_plotly_general.add_trace(go.Scatter(x=df_general_plot_filtered['ds'], y=df_general_plot_filtered['yhat_total_forecast'], mode='lines', name='Pronóstico Total (Suma yhat)', line=dict(color='crimson')))
-                        if 'y_total_prev_year' in df_general_plot_filtered.columns:
-                             fig_plotly_general.add_trace(go.Scatter(x=df_general_plot_filtered['ds'], y=df_general_plot_filtered['y_total_prev_year'], mode='lines+markers', name='Demanda Total Año Anterior', marker=dict(size=5), line=dict(color='forestgreen', dash='dot')))
-                        
-                        fig_plotly_general.update_layout(
-                            title=dict(text='Visión General Agregada: Demanda Total', x=0.5, font=dict(size=18)),
-                            xaxis_title_text='Fecha', yaxis_title_text='Demanda Total Agregada',
-                            legend_title_text='Leyenda', xaxis_rangeslider_visible=True,
-                            hovermode='x unified', height=600,
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                        )
-                        st.plotly_chart(fig_plotly_general, use_container_width=True)
-                    else:
-                        st.info("No hay suficientes datos agregados para generar el gráfico general.")
+                            fig_plotly_general = go.Figure()
+                            if 'y_total_actual' in df_general_plot_filtered.columns:
+                                fig_plotly_general.add_trace(go.Scatter(x=df_general_plot_filtered['ds'], y=df_general_plot_filtered['y_total_actual'], mode='lines+markers', name='Demanda Real Total', marker=dict(size=5), line=dict(color='navy')))
+                            if 'yhat_total_forecast' in df_general_plot_filtered.columns:
+                                fig_plotly_general.add_trace(go.Scatter(x=df_general_plot_filtered['ds'], y=df_general_plot_filtered['yhat_total_forecast'], mode='lines', name='Pronóstico Total (Suma yhat)', line=dict(color='crimson')))
+                            if 'y_total_prev_year' in df_general_plot_filtered.columns:
+                                 fig_plotly_general.add_trace(go.Scatter(x=df_general_plot_filtered['ds'], y=df_general_plot_filtered['y_total_prev_year'], mode='lines+markers', name='Demanda Total Año Anterior', marker=dict(size=5), line=dict(color='forestgreen', dash='dot')))
+                            
+                            fig_plotly_general.update_layout(
+                                title=dict(text='Visión General Agregada: Demanda Total', x=0.5, font=dict(size=18)),
+                                xaxis_title_text='Fecha', yaxis_title_text='Demanda Total Agregada',
+                                legend_title_text='Leyenda', xaxis_rangeslider_visible=True,
+                                hovermode='x unified', height=600,
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                            )
+                            st.plotly_chart(fig_plotly_general, use_container_width=True)
+                        else:
+                            st.info("No hay suficientes datos agregados para generar el gráfico general.")
+                    else: 
+                        st.info("No hay pronósticos individuales para agregar al gráfico general.")
                 except Exception as e:
                     st.error(f"Ocurrió un error al generar el gráfico general agregado: {e}")
             
@@ -449,9 +456,9 @@ if df_demanda_full is not None:
 
             st.markdown("---")
             st.subheader("Resumen del Impacto Promedio de Feriados (Top por Servicio)")
-            if all_holiday_impacts_list_global:
+            if all_holiday_impacts_list_global: 
                 df_all_holiday_impacts = pd.DataFrame(all_holiday_impacts_list_global)
-                if not df_all_holiday_impacts.empty:
+                if not df_all_holiday_impacts.empty and 'impacto_promedio' in df_all_holiday_impacts.columns:
                     df_all_holiday_impacts['impacto_abs'] = df_all_holiday_impacts['impacto_promedio'].abs()
                     summary_holiday_impact_df = df_all_holiday_impacts.sort_values(
                         by=['servicio', 'impacto_abs'], ascending=[True, False]
@@ -464,7 +471,7 @@ if df_demanda_full is not None:
             else:
                 st.info("No hay datos de impacto de feriados para mostrar.")
 
-        # --- Pestaña: Análisis por Servicio ---
+
         with tab_service_detail:
             st.header("🔍 Análisis Detallado por Servicio")
             
@@ -481,7 +488,7 @@ if df_demanda_full is not None:
                 if selected_service_for_detail and selected_service_for_detail in processed_services_forecasts:
                     service_data = processed_services_forecasts[selected_service_for_detail]
                     model = service_data['model']
-                    forecast_df = service_data['forecast_df']
+                    forecast_df_detail = service_data['forecast_df'] 
                     metrics = service_data['metrics']
                     fig_components_service = service_data['fig_components']
                     df_prophet_train_service = service_data['train_data']
@@ -505,7 +512,7 @@ if df_demanda_full is not None:
                         df_prev_year_demand.rename(columns={'y': 'y_prev_year'}, inplace=True)
                         df_prev_year_demand['ds'] = df_prev_year_demand['ds'] + pd.DateOffset(years=1)
                         
-                        forecast_with_prev_year = pd.merge(forecast_df, df_prev_year_demand, on='ds', how='left')
+                        forecast_with_prev_year = pd.merge(forecast_df_detail, df_prev_year_demand, on='ds', how='left')
 
                         min_date_service = forecast_with_prev_year['ds'].min()
                         max_date_service = forecast_with_prev_year['ds'].max()
@@ -550,7 +557,7 @@ if df_demanda_full is not None:
                         st.pyplot(fig_components_service)
                         plt.close(fig_components_service) 
                     else:
-                        st.info("No se generaron los componentes del modelo (posiblemente debido a un error previo o no se pudieron generar).")
+                        st.info("No se generaron los componentes del modelo.")
                     
                     st.markdown("---")
                     st.subheader(f"Análisis de Impacto de Feriados para: {selected_service_for_detail}")
@@ -559,42 +566,49 @@ if df_demanda_full is not None:
                             st.write("Impacto Promedio Estimado de Feriados (del modelo):")
                             st.dataframe(holiday_impacts_df_service_detail.set_index('feriado'), use_container_width=True)
                         else:
-                            st.info(f"El modelo no estimó un impacto significativo para los feriados definidos en '{selected_service_for_detail}', o no hay feriados en el periodo de datos.")
+                            st.info(f"El modelo no estimó un impacto significativo para los feriados definidos en '{selected_service_for_detail}'.")
 
                         with st.expander("Ver gráficos de demanda alrededor de cada feriado"):
                             num_feriados_plot_key = f"num_feriados_slider_{selected_service_for_detail.replace(' ', '_')}"
-                            num_feriados_plot = st.slider("Máximo de feriados a graficar:", 1, len(df_feriados_eventos_processed), min(5, len(df_feriados_eventos_processed)), key=num_feriados_plot_key)
+                            max_feriados_to_plot = len(df_feriados_eventos_processed) if df_feriados_eventos_processed is not None else 1
+                            num_feriados_plot = st.slider("Máximo de feriados a graficar:", 1, max_feriados_to_plot, min(5, max_feriados_to_plot), key=num_feriados_plot_key)
                             
-                            for idx, feriado_row in df_feriados_eventos_processed.head(num_feriados_plot).iterrows():
-                                holiday_name = str(feriado_row['holiday'])
-                                holiday_date = feriado_row['ds']
-                                lower_w = int(feriado_row['lower_window'])
-                                upper_w = int(feriado_row['upper_window'])
+                            if df_feriados_eventos_processed is not None:
+                                for idx, feriado_row in df_feriados_eventos_processed.head(num_feriados_plot).iterrows():
+                                    holiday_name = str(feriado_row['holiday'])
+                                    holiday_date = feriado_row['ds'] 
+                                    lower_w = int(feriado_row['lower_window'])
+                                    upper_w = int(feriado_row['upper_window'])
 
-                                analysis_start = holiday_date - pd.Timedelta(days=10)
-                                analysis_end = holiday_date + pd.Timedelta(days=10)
-                                holiday_view_df = forecast_df[(forecast_df['ds'] >= analysis_start) & (forecast_df['ds'] <= analysis_end)].copy()
+                                    analysis_start = holiday_date - pd.Timedelta(days=10)
+                                    analysis_end = holiday_date + pd.Timedelta(days=10)
+                                    holiday_view_df = forecast_df_detail[(forecast_df_detail['ds'] >= analysis_start) & (forecast_df_detail['ds'] <= analysis_end)].copy()
 
-                                if holiday_view_df.empty: continue
+                                    if holiday_view_df.empty: continue
 
-                                fig_h = go.Figure()
-                                if 'y' in holiday_view_df.columns:
-                                    fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['y'], mode='lines+markers', name='Real', line=dict(color='blue')))
-                                fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['yhat'], mode='lines+markers', name='Pronóstico', line=dict(color='red', dash='dash')))
-                                fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['yhat_upper'], mode='lines', line=dict(width=0), showlegend=False))
-                                fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['yhat_lower'], mode='lines', line=dict(width=0), fillcolor='rgba(255,0,0,0.1)', fill='tonexty', showlegend=False))
-                                
-                                fig_h.add_vline(x=holiday_date, line_width=2, line_dash="dash", line_color="green", annotation_text=f"{holiday_name}", annotation_position="top right")
-                                effective_start_h = holiday_date + pd.Timedelta(days=lower_w); effective_end_h = holiday_date + pd.Timedelta(days=upper_w)
-                                if effective_start_h < effective_end_h: 
-                                     fig_h.add_vrect(x0=effective_start_h, x1=effective_end_h, fillcolor="orange", opacity=0.2, layer="below", line_width=0, annotation_text=f"Efecto Modelo ({lower_w}d a +{upper_w}d)")
+                                    fig_h = go.Figure()
+                                    if 'y' in holiday_view_df.columns:
+                                        fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['y'], mode='lines+markers', name='Real', line=dict(color='blue')))
+                                    fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['yhat'], mode='lines+markers', name='Pronóstico', line=dict(color='red', dash='dash')))
+                                    fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['yhat_upper'], mode='lines', line=dict(width=0), showlegend=False))
+                                    fig_h.add_trace(go.Scatter(x=holiday_view_df['ds'], y=holiday_view_df['yhat_lower'], mode='lines', line=dict(width=0), fillcolor='rgba(255,0,0,0.1)', fill='tonexty', showlegend=False))
+                                    
+                                    fig_h.add_vline(x=holiday_date, line_width=2, line_dash="dash", line_color="green")
+                                    fig_h.add_annotation(
+                                        x=holiday_date, y=1, yref="paper", text=f"{holiday_name}",
+                                        showarrow=False, font=dict(color="black", size=12),
+                                        bgcolor="rgba(255,255,255,0.6)", xanchor="left", xshift=5, yshift=10 )
+                                    
+                                    effective_start_h = holiday_date + pd.Timedelta(days=lower_w); effective_end_h = holiday_date + pd.Timedelta(days=upper_w)
+                                    if effective_start_h < effective_end_h: 
+                                         fig_h.add_vrect(x0=effective_start_h, x1=effective_end_h, fillcolor="orange", opacity=0.2, layer="below", line_width=0, annotation_text=f"Efecto Modelo ({lower_w}d a +{upper_w}d)")
 
-                                fig_h.update_layout(title=f"Demanda alrededor de '{holiday_name}' para {selected_service_for_detail}", xaxis_title="Fecha", yaxis_title="Demanda", height=400, margin=dict(t=50, b=50))
-                                st.plotly_chart(fig_h, use_container_width=True)
+                                    fig_h.update_layout(title=f"Demanda alrededor de '{holiday_name}' para {selected_service_for_detail}", xaxis_title="Fecha", yaxis_title="Demanda", height=400, margin=dict(t=50, b=50))
+                                    st.plotly_chart(fig_h, use_container_width=True)
                     else:
                         st.info(f"No hay datos de feriados cargados para analizar el impacto en '{selected_service_for_detail}'.")
 
-        # --- Pestaña: Explorador de Datos ---
+
         with tab_data_explorer:
             st.header("📄 Explorador de Datos Cargados")
             
@@ -614,10 +628,8 @@ if df_demanda_full is not None:
             else:
                 st.info("No se han cargado o procesado datos de feriados.")
             
-            # --- MODIFICACIÓN AQUÍ ---
-            st.markdown("---") # Separador visual
+            st.markdown("---") 
             if processed_services_forecasts:
-                # Mostrar el filtro (selectbox) primero
                 service_to_show_fcst_key = "fcst_table_select_explorer"
                 service_to_show_fcst = st.selectbox(
                     "Selecciona un servicio para ver su tabla de pronóstico:",
@@ -625,7 +637,6 @@ if df_demanda_full is not None:
                     key=service_to_show_fcst_key
                 )
 
-                # Luego el subencabezado y la tabla si se selecciona un servicio
                 if service_to_show_fcst:
                     st.subheader(f"Tabla de Pronóstico para: {service_to_show_fcst} (Primeras 1000 filas)")
                     fcst_df_to_show = processed_services_forecasts[service_to_show_fcst]['forecast_df']
@@ -635,14 +646,203 @@ if df_demanda_full is not None:
                     if st.checkbox(f"Mostrar descripción estadística del pronóstico para {service_to_show_fcst}", key=desc_fcst_key):
                         st.dataframe(fcst_df_to_show.describe(include='all'))
                 else:
-                    # Si hay pronósticos procesados pero no se selecciona ninguno (poco probable con selectbox a menos que las opciones estén vacías)
                     st.subheader("Pronósticos Generados")
                     st.info("Selecciona un servicio de la lista de arriba para ver su tabla de pronóstico.")
             
-            else: # Si no hay pronósticos procesados en absoluto
+            else: 
                 st.subheader("Pronósticos Generados")
                 st.info("No se han generado pronósticos aún. Completa los pasos anteriores.")
-            # --- FIN DE LA MODIFICACIÓN ---
+
+        with tab_analisis_impacto:
+            st.header("🎯 Análisis de Impacto y Variación")
+
+            if not processed_services_forecasts:
+                st.warning("No hay pronósticos procesados para realizar este análisis. Por favor, procesa los servicios primero.")
+            else:
+                st.subheader("1. Servicios Más Afectados por Feriados")
+                if all_holiday_impacts_list_global:
+                    df_all_hol_impacts = pd.DataFrame(all_holiday_impacts_list_global)
+                    if not df_all_hol_impacts.empty and 'impacto_promedio' in df_all_hol_impacts.columns:
+                        df_all_hol_impacts['impacto_abs'] = df_all_hol_impacts['impacto_promedio'].abs()
+                        service_max_impacts = df_all_hol_impacts.loc[df_all_hol_impacts.groupby('servicio')['impacto_abs'].idxmax()]
+                        ranked_services_by_holiday = service_max_impacts.sort_values(by='impacto_abs', ascending=False)
+                        
+                        st.write("Ranking de servicios según el mayor impacto promedio absoluto de un feriado:")
+                        st.dataframe(ranked_services_by_holiday[['servicio', 'feriado', 'impacto_promedio', 'dias_afectados']].reset_index(drop=True), use_container_width=True)
+                    else:
+                        st.info("No hay datos de impacto de feriados suficientes para este análisis.")
+                else:
+                    st.info("No se han calculado impactos de feriados.")
+
+                st.markdown("---")
+                st.subheader("2. Impacto de Feriado en Fecha Específica")
+                
+                service_keys_impact = list(processed_services_forecasts.keys())
+                if not service_keys_impact:
+                    st.info("No hay servicios procesados para seleccionar.")
+                else:
+                    selected_service_impact = st.selectbox(
+                        "Selecciona un servicio para analizar:",
+                        options=service_keys_impact,
+                        key="service_select_impact_tab"
+                    )
+
+                    min_forecast_date = pd.Timestamp.max 
+                    max_forecast_date = pd.Timestamp.min 
+                    if selected_service_impact and selected_service_impact in processed_services_forecasts:
+                        forecast_df_for_dates = processed_services_forecasts[selected_service_impact]['forecast_df']
+                        if not forecast_df_for_dates.empty:
+                            min_forecast_date = forecast_df_for_dates['ds'].min()
+                            max_forecast_date = forecast_df_for_dates['ds'].max()
+                    
+                    default_date = pd.to_datetime('today').normalize()
+                    if default_date < min_forecast_date : default_date = min_forecast_date
+                    if default_date > max_forecast_date : default_date = max_forecast_date
+                    if min_forecast_date > max_forecast_date: 
+                        min_forecast_date = default_date
+                        max_forecast_date = default_date + pd.Timedelta(days=30)
+
+
+                    selected_date_for_holiday_analysis = st.date_input(
+                        "Selecciona una fecha para analizar impacto de feriado:",
+                        value=default_date.to_pydatetime() if pd.notna(default_date) else pd.to_datetime('today').normalize().to_pydatetime() ,
+                        min_value=min_forecast_date.to_pydatetime() if pd.notna(min_forecast_date) else pd.to_datetime('today').normalize().to_pydatetime(),
+                        max_value=max_forecast_date.to_pydatetime() if pd.notna(max_forecast_date) else (pd.to_datetime('today').normalize() + pd.DateOffset(years=1)).to_pydatetime(),
+                        key="date_input_holiday_analysis"
+                    )
+                    selected_date_for_holiday_analysis = pd.to_datetime(selected_date_for_holiday_analysis)
+
+                    active_holiday_found = False
+                    if selected_service_impact and not df_feriados_eventos_processed.empty:
+                        for _, feriado_row in df_feriados_eventos_processed.iterrows():
+                            holiday_ds = pd.to_datetime(feriado_row['ds'])
+                            lower_w = int(feriado_row['lower_window'])
+                            upper_w = int(feriado_row['upper_window'])
+                            hol_name = str(feriado_row['holiday'])
+
+                            effective_start = holiday_ds + pd.Timedelta(days=lower_w)
+                            effective_end = holiday_ds + pd.Timedelta(days=upper_w)
+                            
+                            if (effective_start <= selected_date_for_holiday_analysis <= effective_end) or \
+                               (lower_w == 0 and upper_w == 0 and selected_date_for_holiday_analysis == holiday_ds):
+                                st.write(f"La fecha seleccionada ({selected_date_for_holiday_analysis.strftime('%d/%m/%Y')}) está afectada por el feriado: **{hol_name}** (Fecha original del feriado: {holiday_ds.strftime('%d/%m/%Y')}).")
+                                active_holiday_found = True
+                                
+                                forecast_df_service = processed_services_forecasts[selected_service_impact]['forecast_df']
+                                
+                                analysis_start_date = holiday_ds - pd.Timedelta(days=7)
+                                analysis_end_date = holiday_ds + pd.Timedelta(days=7)
+                                
+                                demand_around_holiday = forecast_df_service[
+                                    (forecast_df_service['ds'] >= analysis_start_date) &
+                                    (forecast_df_service['ds'] <= analysis_end_date)
+                                ][['ds', 'yhat']].copy() 
+                                
+                                if hol_name in forecast_df_service.columns:
+                                    holiday_component_data = forecast_df_service[
+                                        (forecast_df_service['ds'] >= analysis_start_date) &
+                                        (forecast_df_service['ds'] <= analysis_end_date)
+                                    ][['ds', hol_name]].copy()
+                                    demand_around_holiday = pd.merge(demand_around_holiday, holiday_component_data, on='ds', how='left')
+
+
+                                st.write(f"Demanda pronosticada para '{selected_service_impact}' 7 días antes y después de '{hol_name}':")
+                                st.dataframe(demand_around_holiday.set_index('ds'), use_container_width=True)
+
+                                fig_demand_around = go.Figure()
+                                fig_demand_around.add_trace(go.Scatter(x=demand_around_holiday['ds'], y=demand_around_holiday['yhat'], mode='lines+markers', name='Pronóstico (yhat)'))
+                                if hol_name in demand_around_holiday.columns:
+                                     fig_demand_around.add_trace(go.Scatter(x=demand_around_holiday['ds'], y=demand_around_holiday[hol_name], mode='lines', name=f'Impacto: {hol_name}'))
+                                
+                                # --- CORRECCIÓN AQUÍ ---
+                                fig_demand_around.add_vline(
+                                    x=holiday_ds, 
+                                    line_width=2, 
+                                    line_dash="dash", 
+                                    line_color="red" # Color original de tu línea
+                                )
+                                fig_demand_around.add_annotation(
+                                    x=holiday_ds,
+                                    y=1, 
+                                    yref="paper",
+                                    text=hol_name,
+                                    showarrow=False,
+                                    font=dict(color="black", size=12),
+                                    bgcolor="rgba(255,255,255,0.6)",
+                                    xanchor="right", # Para simular "top left" de la línea
+                                    xshift=-5,      # Desplazar a la izquierda de la línea
+                                    yshift=10       
+                                )
+                                # --- FIN DE LA CORRECCIÓN ---
+
+                                fig_demand_around.update_layout(
+                                    title=f"Demanda +/- 7 días de {hol_name} para {selected_service_impact}",
+                                    xaxis_title="Fecha", yaxis_title="Demanda Pronosticada (yhat)",
+                                    hovermode="x unified"
+                                )
+                                st.plotly_chart(fig_demand_around, use_container_width=True)
+                                break 
+                        
+                        if not active_holiday_found:
+                            st.info(f"No se encontraron feriados activos (considerando sus ventanas) en la fecha seleccionada ({selected_date_for_holiday_analysis.strftime('%d/%m/%Y')}).")
+                    elif df_feriados_eventos_processed.empty:
+                        st.info("No hay datos de feriados cargados para realizar este análisis.")
+
+
+                st.markdown("---")
+                st.subheader("3. Variación Porcentual Diaria del Pronóstico")
+                if not service_keys_impact: 
+                    st.info("No hay servicios procesados para seleccionar.")
+                else:
+                    selected_service_var = st.selectbox(
+                        "Selecciona un servicio para ver su variación diaria:",
+                        options=service_keys_impact,
+                        key="service_select_variation_tab"
+                    )
+
+                    if selected_service_var and selected_service_var in processed_services_forecasts:
+                        forecast_df_var = processed_services_forecasts[selected_service_var]['forecast_df'][['ds', 'yhat']].copy()
+                        forecast_df_var = forecast_df_var.sort_values(by='ds')
+                        
+                        forecast_df_var['yhat_anterior'] = forecast_df_var['yhat'].shift(1)
+                        
+                        forecast_df_var['variacion_%'] = np.where(
+                            forecast_df_var['yhat_anterior'].isnull() | (forecast_df_var['yhat_anterior'] == 0),
+                            np.nan, 
+                            ((forecast_df_var['yhat'] - forecast_df_var['yhat_anterior']) / forecast_df_var['yhat_anterior']) * 100
+                        )
+                        
+                        forecast_df_var_display = forecast_df_var[['ds', 'yhat', 'variacion_%']].copy()
+                        forecast_df_var_display['variacion_%'] = forecast_df_var_display['variacion_%'].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "N/A")
+                        
+                        st.write(f"Variación porcentual diaria para '{selected_service_var}':")
+                        # Mostrar solo las filas donde 'variacion_%' no es 'N/A' (es decir, a partir del segundo día)
+                        # y solo para el período de pronóstico futuro
+                        future_start_date = forecast_df_var[forecast_df_var['yhat_anterior'].notnull()]['ds'].min() # Primer día con variación
+                        if 'train_data' in processed_services_forecasts[selected_service_var]:
+                            last_train_date = processed_services_forecasts[selected_service_var]['train_data']['ds'].max()
+                            future_start_date = max(future_start_date, last_train_date + pd.Timedelta(days=1))
+
+
+                        st.dataframe(
+                            forecast_df_var_display[forecast_df_var_display['ds'] >= future_start_date].set_index('ds').head(future_days_global + 7), 
+                            use_container_width=True
+                        ) 
+
+                        fig_var = go.Figure()
+                        valid_var_data = forecast_df_var[forecast_df_var['variacion_%'].notna()]
+                        fig_var.add_trace(go.Scatter(
+                            x=valid_var_data['ds'], 
+                            y=valid_var_data['variacion_%'], 
+                            mode='lines+markers', 
+                            name='Variación % Diaria'
+                        ))
+                        fig_var.update_layout(
+                            title=f"Variación Porcentual Diaria de yhat para {selected_service_var}",
+                            xaxis_title="Fecha", yaxis_title="Variación Diaria (%)",
+                            hovermode="x unified"
+                        )
+                        st.plotly_chart(fig_var, use_container_width=True)
 
     else: 
         st.info("Por favor, selecciona al menos un tipo de servicio en la barra lateral para comenzar el análisis.")
