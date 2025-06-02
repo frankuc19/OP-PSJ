@@ -21,3 +21,4 @@ gspread-dataframe
 oauth2client
 seaborn 
 statsmodels
+prophet
