@@ -20,11 +20,13 @@ if not st.session_state.get('authenticated', False):
 
 # --- SI EL USUARIO ESTÁ AUTENTICADO, EL CÓDIGO CONTINÚA DESDE AQUÍ ---
 
-# MODIFICADO: Se elimina el TTL para que la actualización sea manual con el botón.
+# El decorador @st.cache_data guarda en caché el resultado de esta función.
+# Si los datos en Google Sheets cambian, es necesario limpiar la caché
+# para ver las actualizaciones.
 @st.cache_data
 def load_data_from_gsheet(sheet_url):
     """
-    Carga datos desde Google Sheets. La caché se limpia manualmente con el botón de actualizar.
+    Carga datos desde Google Sheets. La caché se limpia manually con el botón de actualizar.
     """
     try:
         csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
@@ -34,7 +36,12 @@ def load_data_from_gsheet(sheet_url):
         df.columns = df.columns.str.lower().str.strip()
 
         if 'pickup_datetime' in df.columns:
-            df['pickup_datetime'] = pd.to_datetime(df['pickup_datetime'], errors='coerce')
+            # IMPORTANTE PARA EL FILTRO DE FECHAS:
+            # Se convierte la columna 'pickup_datetime' a formato datetime.
+            # Se especifica el formato '%d/%m/%Y %H:%M:%S' según la imagen proporcionada.
+            # 'errors="coerce"' hará que las fechas con formatos no reconocibles o que no coincidan
+            # exactamente con este formato se conviertan en NaT (Not a Time).
+            df['pickup_datetime'] = pd.to_datetime(df['pickup_datetime'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
         else:
             st.warning("Advertencia en load_data: La columna 'pickup_datetime' no se encontró.")
             return None
@@ -54,11 +61,10 @@ def load_data_from_gsheet(sheet_url):
         return df
     except Exception as e:
         st.error(f"Error al cargar o procesar los datos del Google Sheet: {e}")
-        st.warning("Verifica la URL del Google Sheet y que el formato de los datos sea el esperado.")
+        st.warning("Verifica la URL del Google Sheet, los permisos y que el formato de los datos (especialmente fechas) sea el esperado.")
         return None
 
 st.title("📊 Dashboard de Operaciones")
-# MODIFICADO: El texto ahora indica que la actualización es manual.
 st.write("Análisis interactivo de los datos de viajes cargados. Usa el botón en la barra lateral para actualizar la tabla.")
 
 GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ZLwfPqKG2LP2eqp7hDkFeUCSw2jsgGhkmek3xL2KzGc/edit?usp=sharing"
@@ -67,12 +73,13 @@ df = load_data_from_gsheet(GSHEET_URL)
 if df is not None:
     st.sidebar.header("Filtros Interactivos")
     
-    # --- NUEVO: Botón para actualizar la tabla ---
+    # ESTE BOTÓN ES CRUCIAL: Limpia la caché de 'load_data_from_gsheet'
+    # y vuelve a ejecutar el script para cargar los datos más recientes.
+    # Úsalo si actualizaste el Google Sheet y no ves los cambios reflejados.
     if st.sidebar.button("🔄 Actualizar Tabla"):
-        st.cache_data.clear() # Limpia la caché de datos
-        st.rerun() # Vuelve a ejecutar el script para recargar los datos
+        st.cache_data.clear() 
+        st.rerun() 
 
-    # --- Filtros existentes ---
     job_id_input = st.sidebar.text_input("Buscar por Job ID:", key="dashboard_job_id_filter")
     selected_convenios = st.sidebar.multiselect('Convenio:', options=sorted(df['convenio'].unique()) if 'convenio' in df.columns else [], default=[], key="dashboard_convenio_filter")
     selected_tipos_servicio = st.sidebar.multiselect('Tipo de Servicio:', options=sorted(df['tipo_servicio'].unique()) if 'tipo_servicio' in df.columns else [], default=[], key="dashboard_tipo_servicio_filter")
@@ -83,18 +90,34 @@ if df is not None:
     st.sidebar.markdown("---")
     st.sidebar.subheader("Filtro por Fecha y Hora de Recogida")
 
+    # CÁLCULO DE FECHAS PARA EL FILTRO:
+    # Estas líneas determinan las fechas mínima y máxima A PARTIR DEL DATAFRAME 'df' CARGADO.
+    # Si 'df' es una versión cacheada antigua o si las fechas nuevas no se pudieron parsear (son NaT),
+    # min_date_data y max_date_data reflejarán eso.
     if not df['pickup_datetime'].isnull().all():
-        min_date_data = df['pickup_datetime'].min().date()
-        max_date_data = df['pickup_datetime'].max().date()
+        min_date_data = df['pickup_datetime'].min().date() 
+        max_date_data = df['pickup_datetime'].max().date() 
     else:
         min_date_data = pd.Timestamp.now().date()
         max_date_data = pd.Timestamp.now().date()
 
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        start_date = st.date_input("Fecha de inicio", value=min_date_data, min_value=min_date_data, max_value=max_date_data, key="dashboard_start_date")
+        start_date = st.date_input(
+            "Fecha de inicio", 
+            value=min_date_data, 
+            min_value=min_date_data, 
+            max_value=max_date_data, 
+            key="dashboard_start_date"
+        )
     with col2:
-        end_date = st.date_input("Fecha de fin", value=max_date_data, min_value=min_date_data, max_value=max_date_data, key="dashboard_end_date")
+        end_date = st.date_input(
+            "Fecha de fin", 
+            value=max_date_data, 
+            min_value=min_date_data, 
+            max_value=max_date_data, 
+            key="dashboard_end_date"
+        )
 
     col3, col4 = st.sidebar.columns(2)
     with col3:
@@ -102,7 +125,6 @@ if df is not None:
     with col4:
         end_time = st.time_input("Hora de fin", value=time(23, 59, 59), key="dashboard_end_time")
 
-    # Aplicación de filtros
     df_filtered = df.copy()
     
     if job_id_input and 'job_id' in df_filtered.columns:
@@ -121,19 +143,24 @@ if df is not None:
     if start_date > end_date:
         st.sidebar.error("Error: La fecha de inicio no puede ser posterior a la fecha de fin.")
     else:
-        df_filtered = df_filtered[
-            (df_filtered['pickup_datetime'].dt.date >= start_date) &
-            (df_filtered['pickup_datetime'].dt.date <= end_date)
-        ]
-        df_filtered = df_filtered[
-            (df_filtered['pickup_datetime'].dt.time >= start_time) &
-            (df_filtered['pickup_datetime'].dt.time <= end_time)
-        ]
+        # Aplicar filtro de fecha solo si la columna 'pickup_datetime' no es todo NaT
+        if not df_filtered['pickup_datetime'].isnull().all():
+            df_filtered = df_filtered[
+                (df_filtered['pickup_datetime'].dt.date >= start_date) &
+                (df_filtered['pickup_datetime'].dt.date <= end_date)
+            ]
+            df_filtered = df_filtered[
+                (df_filtered['pickup_datetime'].dt.time >= start_time) &
+                (df_filtered['pickup_datetime'].dt.time <= end_time)
+            ]
+        elif not df['pickup_datetime'].isnull().all(): # Si el df original tenía fechas pero el filtrado actual no
+             st.warning("El rango de fechas seleccionado no tiene datos. Mostrando todos los datos según otros filtros.")
+        # Si df_filtered['pickup_datetime'] es todo NaT después de otros filtros, no se puede filtrar por fecha/hora
+
 
     st.header("Vista de Datos")
     st.dataframe(df_filtered)
 
-    # --- Descarga de CSV ---
     desired_csv_columns_ordered = [
         'pickup_datetime', 'job_id', 'Categoria', 'estimated_payment', 
         'Categoria_viaje', 'latrecogida', 'lonrecogida', 
@@ -142,7 +169,7 @@ if df is not None:
     rename_map_for_csv = {
         'pickup_datetime': 'pickup_datetime',
         'job_id': 'job_id',
-        'categoria': 'Categoria',
+        'categoria': 'Categoria', 
         'estimated_payment': 'estimated_payment',
         'categoria_viaje': 'Categoria_viaje',
         'latrecogida': 'latrecogida',
@@ -151,19 +178,24 @@ if df is not None:
         'londestino': 'londestino',
         'convenio': 'Convenio',
         'tipo_servicio' : 'Tipo_servicio',
-        'zonaorigen' : 'ZonaOrigen',    
+        'zonaorigen' : 'ZonaOrigen',     
         'zonadestino' : 'Zonadestino'
     }
     columns_to_select_for_csv = [lc_col for lc_col in rename_map_for_csv.keys() if lc_col in df_filtered.columns]
     
     if columns_to_select_for_csv:
         df_for_download = df_filtered[columns_to_select_for_csv].copy()
+        # Asegurarse de que pickup_datetime es datetime antes de strftime, si no, podría dar error
+        if 'pickup_datetime' in df_for_download.columns and pd.api.types.is_datetime64_any_dtype(df_for_download['pickup_datetime']):
+            df_for_download['pickup_datetime'] = df_for_download['pickup_datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        elif 'pickup_datetime' in df_for_download.columns: # Si no es datetime (p.ej. ya es string o NaT)
+             df_for_download['pickup_datetime'] = pd.to_datetime(df_for_download['pickup_datetime'], errors='ignore')
+
         current_rename_map = {lc_col: desired_name for lc_col, desired_name in rename_map_for_csv.items() if lc_col in columns_to_select_for_csv}
         df_for_download.rename(columns=current_rename_map, inplace=True)
         final_ordered_columns_for_csv = [col for col in desired_csv_columns_ordered if col in df_for_download.columns]
         df_for_download = df_for_download[final_ordered_columns_for_csv]
-        if 'pickup_datetime' in df_for_download.columns:
-            df_for_download['pickup_datetime'] = df_for_download['pickup_datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
         csv_data = df_for_download.to_csv(index=False).encode('utf-8')
     else:
         st.warning("No hay columnas seleccionables para la descarga según la configuración.")
@@ -204,11 +236,11 @@ if df is not None:
                 map_data = df_filtered[['latrecogida', 'lonrecogida']].copy()
                 map_data.rename(columns={'latrecogida': 'lat', 'lonrecogida': 'lon'}, inplace=True)
                 map_data.dropna(subset=['lat', 'lon'], inplace=True)
-                map_data = map_data[(map_data['lat'] != 0) & (map_data['lon'] != 0)]
+                map_data = map_data[(map_data['lat'] != 0) | (map_data['lon'] != 0)] # Usar OR para excluir (0,0)
                 if not map_data.empty:
                     st.map(map_data)
                 else:
-                    st.info("No hay datos de geolocalización válidos para mostrar en el mapa.")
+                    st.info("No hay datos de geolocalización válidos para mostrar en el mapa (después de excluir coordenadas 0,0).")
             else:
                 st.warning("Columnas 'latrecogida' o 'lonrecogida' no encontradas.")
         
@@ -235,7 +267,7 @@ if df is not None:
         with col_convenio:
             st.subheader("📊 Viajes por Convenio")
             if 'convenio' in df_filtered.columns:
-                df_convenio_chart = df_filtered[df_filtered['convenio'] != 'PERSONAL']
+                df_convenio_chart = df_filtered[df_filtered['convenio'] != 'PERSONAL'] 
                 convenio_counts = df_convenio_chart['convenio'].value_counts()
                 st.bar_chart(convenio_counts)
             else:
@@ -255,11 +287,11 @@ if df is not None:
     else:
         st.info("No hay datos para mostrar con los filtros seleccionados.")
 else:
-    st.warning("No se pudieron cargar los datos. Revisa la URL y los permisos de tu Google Sheet.")
+    st.warning("No se pudieron cargar los datos. Revisa la URL y los permisos de tu Google Sheet. Asegúrate que las fechas estén en el formato esperado (ej: DD/MM/YYYY HH:MM:SS).")
 
 if st.sidebar.button("Cerrar Sesión", key="logout_dashboard_page"):
-    for key_session in st.session_state.keys():
-        if key_session not in ['authenticated', 'username', 'role']:
+    for key_session in list(st.session_state.keys()): # Usar list() para evitar error de tamaño cambiado durante iteración
+        if key_session not in ['authenticated', 'username', 'role']: 
             del st.session_state[key_session]
     st.session_state.authenticated = False
     st.rerun()
