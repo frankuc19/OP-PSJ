@@ -110,7 +110,7 @@ prioritize_supervip_param = st.sidebar.toggle(
     value=True,
     help="Si se activa, las reservas 'SUPERVIP' se procesarán con mayor prioridad, después de los convenios obligatorios."
 )
-max_moviles_param = st.sidebar.slider('Máximo de Móviles:', 0, 500, 100, 50, key="pre_max_moviles_slider")
+max_moviles_param = st.sidebar.slider('Máximo de Móviles:', 0, 500, 100, 1, key="pre_max_moviles_slider")
 max_monto_param = st.sidebar.slider('Monto Máximo por Móvil ($):', 100000, 1000000, 500000, 50000, format="$%d", key="pre_max_monto_slider")
 max_reservas_param = st.sidebar.slider('Máximo de Reservas por Móvil:', 1, 20, 5, key="pre_max_reservas_slider")
 max_horas_param = st.sidebar.slider('Máximo de Horas por Ruta:', 0, 24, 10, key="pre_max_horas_slider")
