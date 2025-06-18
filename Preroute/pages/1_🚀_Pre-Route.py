@@ -110,10 +110,13 @@ prioritize_supervip_param = st.sidebar.toggle(
     value=True,
     help="Si se activa, las reservas 'SUPERVIP' se procesarán con mayor prioridad, después de los convenios obligatorios."
 )
-max_moviles_param = st.sidebar.slider('Máximo de Móviles:', 0, 500, 100, 5, key="pre_max_moviles_slider")
+max_moviles_param = st.sidebar.slider('Máximo de Móviles:', 0, 500, 100, 50, key="pre_max_moviles_slider")
 max_monto_param = st.sidebar.slider('Monto Máximo por Móvil ($):', 100000, 1000000, 500000, 50000, format="$%d", key="pre_max_monto_slider")
 max_reservas_param = st.sidebar.slider('Máximo de Reservas por Móvil:', 1, 20, 5, key="pre_max_reservas_slider")
 max_horas_param = st.sidebar.slider('Máximo de Horas por Ruta:', 0, 24, 10, key="pre_max_horas_slider")
+# <<< CAMBIO 1: Añadir slider para la nueva restricción de distancia.
+max_distancia_param = st.sidebar.slider('Distancia Máxima entre Servicios (km):', 0, 500, 120, 10, key="pre_max_distancia_slider")
+
 
 # --- Layout de carga de archivos en columnas ---
 col_upload_1, col_upload_2 = st.columns(2)
@@ -197,7 +200,6 @@ selected_end_time_user = st.sidebar.time_input('Hasta la hora:', value=time(23, 
 
 
 # --- Definición de Funciones de Lógica de Negocio ---
-# (Se han omitido para brevedad, pero deben estar aquí en tu código real)
 def check_columns(df, required_columns, filename):
     missing_cols = [col for col in required_columns if col not in df.columns]
     if missing_cols:
@@ -237,12 +239,34 @@ def ruta_cumple_convenio_obligatorio(lista_reservas_movil, convenios_obligatorio
         if reserva.get('Convenio') in convenios_obligatorios_list: return True
     return False
 
-def puede_agregarse_a_movil(movil_reservas, nueva_reserva, max_reservas_param_func, max_monto_param_func, max_horas_param_func, convenios_obligatorios_func, max_interregionales_func, max_otras_divisiones_func):
+# <<< CAMBIO 2: Modificar la firma de la función para aceptar el nuevo parámetro de distancia.
+def puede_agregarse_a_movil(movil_reservas, nueva_reserva, max_reservas_param_func, max_monto_param_func, max_horas_param_func, convenios_obligatorios_func, max_interregionales_func, max_otras_divisiones_func, max_distancia_param_func):
     intervalos_minimos = {('urbano', 'urbano'): 80, ('urbano', 'interregional'): 200, ('interregional', 'urbano'): 200, ('interregional', 'interregional'): 200}
     categorias_viaje_validas = {"interregional", "urbano", "division", "divisiones", "desconocida", "supervip"}
 
     if len(movil_reservas) >= max_reservas_param_func: return False, None, None, f"Máx. {max_reservas_param_func} reservas"
+    
     ultima_reserva = movil_reservas[-1]
+    
+    # --- Validaciones iniciales de datos ---
+    if pd.isna(nueva_reserva.get("HoraFecha")): return False, None, None, "Datos inválidos (hora) en nueva reserva"
+    if pd.isna(ultima_reserva.get("estimated_arrival")): return False, None, None, "Hora llegada inválida en últ. reserva móvil"
+
+    # <<< CAMBIO 2: Implementar la nueva restricción de distancia.
+    lat_fin_anterior = ultima_reserva.get('latdestino')
+    lon_fin_anterior = ultima_reserva.get('londestino')
+    lat_inicio_nueva = nueva_reserva.get('latrecogida')
+    lon_inicio_nueva = nueva_reserva.get('lonrecogida')
+    
+    if pd.notnull(lat_fin_anterior) and pd.notnull(lon_fin_anterior) and pd.notnull(lat_inicio_nueva) and pd.notnull(lon_inicio_nueva):
+        distancia_entre_puntos = haversine_vectorized(lat_fin_anterior, lon_fin_anterior, lat_inicio_nueva, lon_inicio_nueva)
+        if distancia_entre_puntos > max_distancia_param_func:
+            return False, None, None, f"Excede dist. máx. ({distancia_entre_puntos:.1f}km > {max_distancia_param_func}km)"
+    else:
+        return False, None, None, "Coordenadas inválidas para calcular distancia."
+    # --- Fin de la nueva restricción ---
+
+    # --- Continuación de las validaciones existentes ---
     nueva_hora_recogida = nueva_reserva.get("HoraFecha")
     nueva_monto = nueva_reserva.get("estimated_payment", 0)
     nueva_cat_viaje_original = nueva_reserva.get("Categoria_viaje", "Desconocida")
@@ -250,9 +274,6 @@ def puede_agregarse_a_movil(movil_reservas, nueva_reserva, max_reservas_param_fu
     nueva_tiempo_viaje_estimado = nueva_reserva.get("avg_travel_time")
     ultima_hora_llegada_estimada = ultima_reserva.get("estimated_arrival")
 
-    if pd.isna(nueva_hora_recogida): return False, None, None, "Datos inválidos (hora) en nueva reserva"
-    if pd.isna(ultima_hora_llegada_estimada): return False, None, None, "Hora llegada inválida en últ. reserva móvil"
-    
     if nueva_cat_viaje not in categorias_viaje_validas:
         return False, None, None, f"Categoria_viaje nueva inválida: {nueva_cat_viaje_original}"
     
@@ -271,7 +292,7 @@ def puede_agregarse_a_movil(movil_reservas, nueva_reserva, max_reservas_param_fu
     hora_minima_recogida = ultima_hora_llegada_estimada + timedelta(minutes=intervalo_min_requerido)
     if nueva_hora_recogida < hora_minima_recogida:
         return False, tipo_int_base, intervalo_min_requerido, (f"Intervalo ({nueva_cat_viaje_original} post {ultima_cat_viaje_original}) < {intervalo_min_requerido} min. "
-                                                            f"Rec: {nueva_hora_recogida.strftime('%H:%M')}, Lleg: {ultima_hora_llegada_estimada.strftime('%H:%M')}, MinRec: {hora_minima_recogida.strftime('%H:%M')}")
+                                                                f"Rec: {nueva_hora_recogida.strftime('%H:%M')}, Lleg: {ultima_hora_llegada_estimada.strftime('%H:%M')}, MinRec: {hora_minima_recogida.strftime('%H:%M')}")
 
     monto_actual = monto_total_movil(movil_reservas)
     if monto_actual + (nueva_monto if pd.notnull(nueva_monto) else 0) > max_monto_param_func: return False, None, None, f"Excede monto máx. (${max_monto_param_func:,.0f})"
@@ -305,7 +326,6 @@ def puede_agregarse_a_movil(movil_reservas, nueva_reserva, max_reservas_param_fu
 st.header("3. Ejecutar Asignación", divider='blue')
 files_ready = uploaded_file_hist is not None and uploaded_file_pred is not None
 
-# El cálculo principal solo se ejecuta al presionar este botón
 if st.button(
     "🚀 Ejecutar Asignación",
     disabled=not files_ready,
@@ -313,10 +333,8 @@ if st.button(
     type="primary",
     use_container_width=True
 ):
-    # Inicialización de variables locales para el cálculo
     moviles = []; rutas_asignadas_list = []; reservas_no_asignadas_list = []
     
-    # --- Fase 1: Lectura y Validación Inicial ---
     with st.expander("👁️ FASE 1: Lectura y Validación de Archivos", expanded=True):
         with st.spinner('Leyendo y validando archivos...'):
             df_hist = pd.read_csv(uploaded_file_hist)
@@ -350,12 +368,9 @@ if st.button(
                 if selected_categoria_pred_user:
                     if not df_pred.empty and 'Categoria' in df_pred.columns: df_pred = df_pred[df_pred['Categoria'].isin(selected_categoria_pred_user)]
                 
-                # --- NUEVO: Aplicación del filtro de fecha ---
                 if selected_date_user is not None:
                     if not df_pred.empty:
-                        # Compara solo la parte de la fecha de la columna 'HoraFecha'
                         df_pred = df_pred[df_pred['HoraFecha'].dt.date == selected_date_user]
-                # --- FIN DE CAMBIO ---
                 
                 is_time_filter_active = not (selected_start_time_user == time(0, 0) and selected_end_time_user == time(23, 59, 59))
                 if is_time_filter_active:
@@ -366,7 +381,6 @@ if st.button(
 
         st.success("Fase 1 completada.")
 
-    # --- Fase 2: Procesamiento Histórico ---
     with st.expander("⚙️ FASE 2: Procesamiento Histórico", expanded=True):
         with st.spinner('Calculando rutas y promedios históricos...'):
             df_hist['h3_origin'] = simulate_h3_vectorized(df_hist['latrecogida'], df_hist['lonrecogida'])
@@ -377,7 +391,6 @@ if st.button(
             if summary_df.empty: st.warning("⚠️ No se calcularon rutas promedio desde históricos.")
         st.success("Fase 2 completada.")
 
-    # --- Fase 3: Enriquecimiento de Predicciones ---
     with st.expander("📈 FASE 3: Enriquecimiento de Predicciones", expanded=True):
         if df_pred.empty: 
             st.warning("No hay datos de predicción para enriquecer. Saltando Fase 3.")
@@ -410,12 +423,8 @@ if st.button(
                     df_resultado.drop(columns=['default_time_min'], inplace=True, errors='ignore')
                 
                 if 'tiempo_usado' in df_resultado.columns:
-                    # Si existe, llena los valores nulos como lo tenías planeado
                     df_resultado.loc[df_resultado['tiempo_usado'].isnull(), 'tiempo_usado'] = 'Historico'
                 else:
-                    # Opcional: Si la columna no existe, puedes crearla
-                    # df_resultado['tiempo_usado'] = 'Historico' 
-                    # O puedes mostrar un error o simplemente ignorarlo
                     st.warning("La columna 'tiempo_usado' no se encontró en los datos de origen y no se pudo procesar.")
 
                 df_resultado['is_obligatorio_convenio'] = df_resultado['Convenio'].isin(CONVENIOS_OBLIGATORIOS)
@@ -434,7 +443,6 @@ if st.button(
                 if df_resultado_sorted.empty: st.warning("No hay predicciones válidas para asignar.")
             st.success("Fase 3 completada.")
 
-    # --- Fase 4: Asignación de Reservas ---
     with st.expander("🚚 FASE 4: Asignación de Reservas", expanded=True):
         if 'df_resultado_sorted' not in locals() or df_resultado_sorted.empty:
             st.warning("No hay reservas para asignar (df_resultado_sorted vacía o no definida). Saltando Fase 4.")
@@ -451,7 +459,18 @@ if st.button(
                     asignado = False; mejor_motivo_no_asignado = "No se encontró móvil compatible o límite de móviles."
 
                     for idx, movil_actual in enumerate(moviles):
-                        puede_agregar, tipo_rel, int_aplicado, motivo_rechazo = puede_agregarse_a_movil(movil_actual, reserva_actual, max_reservas_param, max_monto_param, max_horas_param, CONVENIOS_OBLIGATORIOS, MAX_INTERREGIONALES_POR_MOVIL, MAX_OTRAS_DIVISIONES_POR_MOVIL)
+                        # <<< CAMBIO 3: Actualizar la llamada a la función para pasar el nuevo parámetro.
+                        puede_agregar, tipo_rel, int_aplicado, motivo_rechazo = puede_agregarse_a_movil(
+                            movil_actual, 
+                            reserva_actual, 
+                            max_reservas_param, 
+                            max_monto_param, 
+                            max_horas_param, 
+                            CONVENIOS_OBLIGATORIOS, 
+                            MAX_INTERREGIONALES_POR_MOVIL, 
+                            MAX_OTRAS_DIVISIONES_POR_MOVIL,
+                            max_distancia_param  # <-- Pasar el valor del slider
+                        )
                         if puede_agregar:
                             movil_actual.append(reserva_actual)
                             rutas_asignadas_list.append({"movil_id": idx + 1, **reserva_actual, "tipo_relacion": tipo_rel, "min_intervalo_aplicado": int_aplicado})
@@ -471,17 +490,13 @@ if st.button(
                 status_text.text("Asignación completada."); progress_bar.empty()
             st.success("Fase 4 completada.")
     
-    # --- GUARDADO EN MEMORIA ---
-    # Al final del cálculo, guardamos los resultados en la memoria de la sesión.
     st.session_state.df_rutas_resultado = pd.DataFrame(rutas_asignadas_list)
     st.session_state.df_no_asignadas_resultado = pd.DataFrame(reservas_no_asignadas_list)
 
 st.write("---")
 
-# --- BLOQUE DE VISUALIZACIÓN DE RESULTADOS ---
 with st.expander("🏁 FASE 5: Resultados Finales", expanded=True):
     try:
-        # LECTURA DESDE MEMORIA: Cargamos los DataFrames desde el estado de la sesión.
         df_rutas = st.session_state.df_rutas_resultado
         df_no_asignadas = st.session_state.df_no_asignadas_resultado
 
